@@ -29,7 +29,8 @@ jobs:
 
       - name: Packer fmt
         run: |
-          packer fmt -check ./shared/config.pkr.hcl ./Ubuntu/22/04
+          packer fmt -check ./shared/config.pkr.hcl
+          packer fmt -check ./Ubuntu/22/04
 
       - name: Packer validate
         env:
