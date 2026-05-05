@@ -54,6 +54,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 The Ubuntu 22.04 template build applies a small security baseline during autoinstall and final cleanup:
 
 - Uses the HTTPS Ubuntu apt mirror configured in `Ubuntu/22/04/files/user-data`.
+- Mirrors `/var/log/installer/curtin-install.log` to the installer console so long-running autoinstall phases show live debug output.
 - Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
 - Disables direct root SSH login in the generated template.
 - Removes `sshpass` from the guest package list and custom Packer container image.

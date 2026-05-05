@@ -4,6 +4,11 @@ autoinstall:
     early-commands:
         # Stop ssh for packer
         - sudo systemctl stop ssh
+        # Mirror curtin's live installer log to tty1 so slow package phases show detail.
+        - >-
+          sh -c 'while [ ! -f /var/log/installer/curtin-install.log ]; do sleep 1; done;
+          echo "[autoinstall-debug] Streaming /var/log/installer/curtin-install.log to tty1";
+          tail -n 0 -F /var/log/installer/curtin-install.log' >/dev/tty1 2>&1 &
     locale: en_US
     keyboard:
         layout: en
