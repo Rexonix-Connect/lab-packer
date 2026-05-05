@@ -4,6 +4,10 @@ name: Build Ubuntu 22.04 Server VM Template
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   packer:
     runs-on: ${{ vars.RUNNER_LABELS }}

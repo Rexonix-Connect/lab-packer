@@ -4,6 +4,10 @@ name: Build Custom Packer Docker Image
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   docker-build-push:
     runs-on: ${{ vars.RUNNER_LABELS }}
