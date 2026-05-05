@@ -1,5 +1,7 @@
 certifi==2026.4.22 --hash=sha256:3cb2210c8f88ba2318d29b0388d1023c8492ff72ecdde4ebdaddbb13a31b1c4a
-charset-normalizer==3.4.7 --hash=sha256:ae196f021b5e7c78e918242d217db021ed2a6ace2bc6ae94c0fc596221c7f58d
+# charset-normalizer publishes platform-specific wheels. Keep hashes for both
+# Alpine x86_64 local builds and Alpine aarch64 GitHub runners.
+charset-normalizer==3.4.7 --hash=sha256:ae196f021b5e7c78e918242d217db021ed2a6ace2bc6ae94c0fc596221c7f58d --hash=sha256:e060d01aec0a910bdccb8be71faf34e7799ce36950f8294c8bf612cba65a2c9e
 idna==3.13 --hash=sha256:892ea0cde124a99ce773decba204c5552b69c3c67ffd5f232eb7696135bc8bb3
 pyspnego==0.12.1 --hash=sha256:7237cb47985ccf5da512106ddb2731e4f9cefec00991f76c054488eb95fb1a2d
 pywinrm==0.4.3 --hash=sha256:c476c1e20dd0875da6fe4684c4d8e242dd537025907c2f11e1990c5aee5c9526
