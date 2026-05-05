@@ -6,6 +6,7 @@ on:
 
 jobs:
   packer:
+    # should be X64 runner, definitely not ARM64 due to Javascript based Github Actions
     runs-on: ${{ vars.RUNNER_LABELS }}
     container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
     steps:
