@@ -40,7 +40,7 @@ source "vsphere-iso" "base" {
   boot_wait  = "3s"
   boot_command = [
     "c<wait>",
-    "linux /casper/vmlinuz --- autoinstall ds=\"nocloud-net\"",
+    "linux /casper/vmlinuz --- autoinstall ds=\"nocloud\""},
     "<enter><wait>",
     "initrd /casper/initrd",
     "<enter><wait>",
