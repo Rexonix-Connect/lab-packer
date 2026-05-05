@@ -34,8 +34,7 @@ source "vsphere-iso" "base" {
   communicator = "ssh"
   ssh_username = "${var.vmUsername}"
   ssh_password = "${var.vmPassword}"
-  ssh_timeout  = "30m"
-  # ssh_handshake_attempts = "10000"
+  ssh_timeout  = "15m"
 
   boot_order = "disk,cdrom,floppy"
   boot_wait  = "3s"
