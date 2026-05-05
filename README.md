@@ -28,6 +28,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 #### Workflow inputs
 
 - `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+- `ssh_timeout` - optional Packer SSH communicator wait timeout, e.g. `45m` or `1h`; defaults to `45m`
 
 #### Ubuntu template requirements
 

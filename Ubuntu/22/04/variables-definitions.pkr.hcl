@@ -57,6 +57,11 @@ variable "vmPassword" {
   sensitive = true
 }
 
+variable "sshTimeout" {
+  type    = string
+  default = "45m"
+}
+
 variable "minimumKmodVersion" {
   type    = string
   default = "29-1ubuntu1.1"
