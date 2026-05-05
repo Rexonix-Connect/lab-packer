@@ -1,14 +1,17 @@
 #cloud-config
 autoinstall:
     version: 1
+    reporting:
+        builtin:
+            type: none
     early-commands:
         # Stop ssh for packer
         - sudo systemctl stop ssh
-        # Mirror curtin's live installer log to tty1 so slow package phases show detail.
+        # Replace the default progress reporter with raw installer logs on tty1.
         - >-
-          sh -c 'while [ ! -f /var/log/installer/curtin-install.log ]; do sleep 1; done;
-          echo "[autoinstall-debug] Streaming /var/log/installer/curtin-install.log to tty1";
-          tail -n 0 -F /var/log/installer/curtin-install.log' >/dev/tty1 2>&1 &
+          sh -c 'echo "[autoinstall-debug] Streaming raw installer logs to tty1";
+          exec tail -n 0 -F /var/log/installer/subiquity-server-debug.log
+          /var/log/installer/curtin-install.log' >/dev/tty1 2>&1 &
     locale: en_US
     keyboard:
         layout: en
