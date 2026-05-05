@@ -11,7 +11,9 @@ source "vsphere-iso" "base" {
 
   cd_content            = {
     "/meta-data" = file("./files/meta-data")
-    "/user-data" = file("./files/user-data")
+    "/user-data" = templatefile("./files/user-data", {
+      minimum_kmod_version = var.minimumKmodVersion
+    })
   }
   cd_label = "cidata"
 

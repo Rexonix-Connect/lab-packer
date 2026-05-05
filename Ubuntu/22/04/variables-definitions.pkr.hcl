@@ -17,7 +17,8 @@ variable "vCenterDatacenterName" {
 }
 
 variable "vCenterInsecureConnection" {
-  type = string
+  type    = bool
+  default = false
 }
 
 variable "vmName" {
@@ -54,6 +55,11 @@ variable "vmUsername" {
 variable "vmPassword" {
   type = string
   sensitive = true
+}
+
+variable "minimumKmodVersion" {
+  type    = string
+  default = "29-1ubuntu1.1"
 }
 
 variable "isoPath" {

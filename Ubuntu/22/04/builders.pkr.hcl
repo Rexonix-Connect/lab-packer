@@ -5,7 +5,7 @@ build {
     vcenter_server      = "${var.vCenterServer}"
     username            = "${var.vCenterUsername}"
     password            = "${var.vCenterPassword}"
-    insecure_connection = "${var.vCenterInsecureConnection}"
+    insecure_connection = var.vCenterInsecureConnection
     datacenter          = "${var.vCenterDatacenterName}"
 
     # Disk configuration

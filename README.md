@@ -46,4 +46,31 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
   - `VCENTER_HOST` - FQDN or IP address of the vCenter Server, e.g. `vcenter.example.com`
   - `VCENTER_USER` - username to authenticate to the vCenter Server, e.g. `administrator@vsphere.local`
   - `VCENTER_PASS` - password to authenticate to the vCenter Server, e.g. `supersecretpassword`
-  - `VCENTER_INSECURE_CONNECTION` - whether to allow insecure connection to the vCenter Server, e.g. `true` or `false`
+  - `VCENTER_INSECURE_CONNECTION` - whether to allow insecure connection to the vCenter Server, e.g. `true` or `false`; prefer `false` and install the trusted vCenter CA on the runner/container where possible
+
+#### Ubuntu template hardening
+
+The Ubuntu 22.04 template build applies a small security baseline during autoinstall and final cleanup:
+
+- Uses the HTTPS Ubuntu apt mirror configured in `Ubuntu/22/04/files/user-data`.
+- Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
+- Disables direct root SSH login in the generated template.
+- Removes `sshpass` from the guest package list and custom Packer container image.
+- Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
+- Runs `packer fmt -check` and `packer validate` in the Ubuntu template workflow before starting the vSphere build.
+
+##### CVE-2026-31431 Copy Fail mitigation
+
+Ubuntu 22.04 Jammy is affected by CVE-2026-31431, also known as Copy Fail. The build requires `kmod` version `29-1ubuntu1.1` or newer and writes a modprobe rule that blocks the vulnerable `algif_aead` kernel module:
+
+- `/etc/modprobe.d/manual-disable-algif_aead.conf`
+- `install algif_aead /bin/false`
+- `blacklist algif_aead`
+
+The final cleanup script fails the build if `algif_aead` is not blocked or if it is loaded. This mitigation can affect workloads that require this kernel crypto module, so test crypto-heavy or container workloads before using the template broadly.
+
+To verify a built VM, check that `kmod` is at least `29-1ubuntu1.1`, `modprobe -n -v algif_aead` resolves to `/bin/false`, and `algif_aead` is absent from `/proc/modules`.
+
+##### Current SSH model
+
+The workflow still uses the temporary `vagrant` account and password-based Packer communicator during provisioning. Root SSH login is disabled, but moving the Packer communicator to SSH keys and removing the persistent `vagrant` password remains the next hardening step.

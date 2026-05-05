@@ -8,7 +8,7 @@ ARG IMAGE_VERSION=v0.0.2
 ARG PACKER_VERSION
 ARG PACKER_IMAGE_DIGEST
 
-RUN apk add --no-cache ansible=8.6.1-r0 py-pip=23.3.1-r0 openssh=9.6_p1-r2 sshpass=1.10-r0
+RUN apk add --no-cache ansible=8.6.1-r0 py-pip=23.3.1-r0 openssh=9.6_p1-r2
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --require-hashes --only-binary=:all: --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 

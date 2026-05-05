@@ -27,6 +27,32 @@ jobs:
         run: |
           packer init ./shared/config.pkr.hcl
 
+      - name: Packer fmt
+        run: |
+          packer fmt -check ./shared/config.pkr.hcl ./Ubuntu/22/04
+
+      - name: Packer validate
+        env:
+          PKR_VAR_vCenterServer: ${{ secrets.VCENTER_HOST }}
+          PKR_VAR_vCenterUsername: ${{ secrets.VCENTER_USER }}
+          PKR_VAR_vCenterPassword: ${{ secrets.VCENTER_PASS }}
+          PKR_VAR_vCenterInsecureConnection: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+          PKR_VAR_vCenterDatacenterName: ${{ vars.VCENTER_DATACENTER_NAME }}
+          PKR_VAR_clusterName: ${{ vars.VCENTER_CLUSTER_NAME }}
+          PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
+          PKR_VAR_diskSizeGb: ${{ inputs.disk_size_gb }}
+          PKR_VAR_isoPath: ${{ vars.UBUNTU_22_04_SERVER_X64_ISO_PATH }}
+          PKR_VAR_templateName: ${{ vars.UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME }}
+          PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
+          PKR_VAR_vmName: "ubuntu2204server-temp" # temporary
+          PKR_VAR_vmFolder: "/" # temporary
+          PKR_VAR_vmUsername: "vagrant" # temporary
+          PKR_VAR_vmPassword: "vagrant" # temporary
+        run: |
+          cd Ubuntu/22/04
+          packer validate -only='vsphere-iso.base' .
+
       - name: Packer build
         env:
           PKR_VAR_vCenterServer: ${{ secrets.VCENTER_HOST }}

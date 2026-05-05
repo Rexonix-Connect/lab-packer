@@ -23,7 +23,7 @@ autoinstall:
     apt:
         primary:
             - arches: [i386, amd64]
-              uri: "http://de.archive.ubuntu.com/ubuntu/"
+              uri: "https://de.archive.ubuntu.com/ubuntu/"
     packages:
         - apt-transport-https
         - ca-certificates
@@ -31,13 +31,14 @@ autoinstall:
         - gnupg-agent
         - software-properties-common
         - ufw
+        - unattended-upgrades
+        - open-vm-tools
         - unzip
         - python3
         - python3-pip
-        - sshpass
         - cloud-guest-utils
     user-data:
-        disable_root: false
+        disable_root: true
         # Grow cloned VMs if their virtual disk is enlarged before first boot.
         growpart:
             mode: auto
@@ -46,8 +47,12 @@ autoinstall:
         resize_rootfs: true
     late-commands:
         - sed -i -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /target/etc/ssh/sshd_config
-        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /target/etc/ssh/sshd_config
+        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
         - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- apt-get update
-        - curtin in-target --target=/target -- apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
+        - curtin in-target --target=/target -- bash -c 'version="$(dpkg-query -W -f="\$${Version}" kmod)"; dpkg --compare-versions "$${version}" ge "${minimum_kmod_version}"'
+        - printf 'install algif_aead /bin/false\nblacklist algif_aead\n' > /target/etc/modprobe.d/manual-disable-algif_aead.conf
+        - curtin in-target --target=/target -- bash -c 'modprobe -n -v algif_aead | grep -q "/bin/false"'
