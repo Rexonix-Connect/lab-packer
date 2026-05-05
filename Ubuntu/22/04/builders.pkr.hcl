@@ -10,7 +10,7 @@ build {
 
     # Disk configuration
     storage {
-      disk_size             = 50000
+      disk_size             = 60000
       disk_thin_provisioned = true
     }
 

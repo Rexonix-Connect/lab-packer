@@ -6,12 +6,12 @@ on:
 
 jobs:
   packer:
-    runs-on: [self-hosted, linux, initial, rexonix-infra]
-    container: ${{ vars.PACKER_DOCKER_IMAGE }}
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
     steps:
-      - uses: Anush008/clean-after-action@v4.2.0
+      - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         
       - name: Packer init
         run: |
