@@ -36,6 +36,16 @@ variable "datastoreName" {
   type = string
 }
 
+variable "diskSizeGb" {
+  type    = number
+  default = 60
+
+  validation {
+    condition     = var.diskSizeGb >= 25
+    error_message = "diskSizeGb must be at least 25 GB."
+  }
+}
+
 variable "vmUsername" {
   type = string
   sensitive = true

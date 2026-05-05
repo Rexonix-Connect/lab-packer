@@ -20,6 +20,15 @@ hostnamectl set-hostname localhost
 # Cleans apt-get.
 echo '> Cleaning apt-get ...'
 apt-get clean
+# Reduces the default ext4 reserved blocks so template clones expose more usable
+# root space in df while still leaving a small safety buffer for root-owned files.
+echo '> Reducing reserved root filesystem blocks ...'
+ROOT_DEVICE="$(findmnt -no SOURCE /)"
+if command -v tune2fs >/dev/null 2>&1 && [[ "${ROOT_DEVICE}" == /dev/* ]] && tune2fs -l "${ROOT_DEVICE}" >/dev/null 2>&1; then
+	tune2fs -m 1 "${ROOT_DEVICE}"
+else
+	echo "> Skipping reserved block tuning for root source ${ROOT_DEVICE}"
+fi
 # Cleans the machine-id.
 echo '> Cleaning the machine-id ...'
 truncate -s 0 /etc/machine-id

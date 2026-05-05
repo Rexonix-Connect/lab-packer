@@ -10,7 +10,7 @@ build {
 
     # Disk configuration
     storage {
-      disk_size             = 60000
+      disk_size             = var.diskSizeGb * 1024
       disk_thin_provisioned = true
     }
 

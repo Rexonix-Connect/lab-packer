@@ -3,6 +3,12 @@ name: Build Ubuntu 22.04 Server VM Template
 
 on:
   workflow_dispatch:
+    inputs:
+      disk_size_gb:
+        description: VM template disk size in GB (minimum 25)
+        type: number
+        required: false
+        default: 60
 
 permissions:
   contents: read
@@ -30,6 +36,7 @@ jobs:
           PKR_VAR_vCenterDatacenterName: ${{ vars.VCENTER_DATACENTER_NAME }}
           PKR_VAR_clusterName: ${{ vars.VCENTER_CLUSTER_NAME }}
           PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
+          PKR_VAR_diskSizeGb: ${{ inputs.disk_size_gb }}
           PKR_VAR_isoPath: ${{ vars.UBUNTU_22_04_SERVER_X64_ISO_PATH }}
           PKR_VAR_templateName: ${{ vars.UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME }}
           PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}

@@ -14,7 +14,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 [![Build Custom Packer Docker Image](../../actions/workflows/build_packer_image.yml/badge.svg)](../../actions/workflows/build_packer_image.yml)
 
-#### Requirements
+#### Docker image requirements
 
 - Variables accessible to the workflow:
   - `RUNNER_LABELS` - labels of the runner to use for the workflow, e.g. `["self-hosted", "X64"]`
@@ -25,7 +25,11 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 [![Build Ubuntu 22.04 Server VM #Template](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml)
 
-#### Requirements
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+
+#### Ubuntu template requirements
 
 - Variables accessible to the workflow:
   - `RUNNER_LABELS` - labels of the runner to use for the workflow, e.g. `["self-hosted", "X64"]`
