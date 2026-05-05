@@ -3,12 +3,12 @@ variable "vCenterServer" {
 }
 
 variable "vCenterUsername" {
-  type = string
+  type      = string
   sensitive = true
 }
 
 variable "vCenterPassword" {
-  type = string
+  type      = string
   sensitive = true
 }
 
@@ -48,12 +48,12 @@ variable "diskSizeGb" {
 }
 
 variable "vmUsername" {
-  type = string
+  type      = string
   sensitive = true
 }
 
 variable "vmPassword" {
-  type = string
+  type      = string
   sensitive = true
 }
 

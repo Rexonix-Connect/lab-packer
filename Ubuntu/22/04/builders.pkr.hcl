@@ -28,7 +28,7 @@ build {
     environment_vars = [
       "BUILD_USERNAME=${var.vmUsername}",
     ]
-    scripts = ["./files/setup.sh"]
+    scripts           = ["./files/setup.sh"]
     expect_disconnect = true
   }
 }
