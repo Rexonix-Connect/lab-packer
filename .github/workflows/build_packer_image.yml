@@ -6,7 +6,6 @@ on:
 
 jobs:
   docker-build-push:
-    # should be X64 runner, definitely not ARM64 due to Javascript based Github Actions
     runs-on: ${{ vars.RUNNER_LABELS }}
     steps:
       - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
