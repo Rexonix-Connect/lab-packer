@@ -42,7 +42,7 @@ variable "diskSizeGb" {
 
   validation {
     condition     = var.diskSizeGb >= 25
-    error_message = "diskSizeGb must be at least 25 GB."
+    error_message = "Disk size must be at least 25 GB."
   }
 }
 
