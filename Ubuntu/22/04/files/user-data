@@ -33,6 +33,7 @@ autoinstall:
             match:
                 size: largest
     apt:
+        geoip: false
         primary:
             - arches: [i386, amd64]
               uri: "http://archive.ubuntu.com/ubuntu/"
