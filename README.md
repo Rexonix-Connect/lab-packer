@@ -23,7 +23,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 ### Build Ubuntu 22.04 Server VM Template
 
-[![Build Ubuntu 22.04 Server VM #Template](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml)
+[![Build Ubuntu 22.04 Server VM Template](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_server_vm_template.yml)
 
 #### Workflow inputs
 
@@ -53,13 +53,9 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 The Ubuntu 22.04 template build applies a small security baseline during autoinstall and final cleanup:
 
-- Uses the HTTPS Ubuntu apt mirror configured in `Ubuntu/22/04/files/user-data`.
-- Keeps Subiquity's default progress output enabled, attempts a best-effort raw installer log stream to `/dev/console`, and dumps installer log tails to the console on failure.
 - Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
 - Disables direct root SSH login in the generated template.
-- Removes `sshpass` from the guest package list and custom Packer container image.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
-- Runs `packer fmt -check` and `packer validate` in the Ubuntu template workflow before starting the vSphere build.
 
 ##### CVE-2026-31431 Copy Fail mitigation
 

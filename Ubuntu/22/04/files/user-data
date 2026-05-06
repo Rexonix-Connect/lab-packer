@@ -4,22 +4,11 @@ autoinstall:
     early-commands:
         # Stop ssh for packer
         - sudo systemctl stop ssh
-        # Best-effort stream Curtin's installer log to the active console.
-        - >-
-          sh -c 'echo "[autoinstall-debug] Streaming /var/log/installer/curtin-install.log to /dev/console";
-          exec tail -n 0 -F /var/log/installer/curtin-install.log' >/dev/console 2>&1 &
-    error-commands:
-        - >-
-          sh -c 'for log in /var/log/installer/subiquity*.log /var/log/installer/curtin-install.log; do
-          if [ -f "$log" ]; then
-          echo "[autoinstall-error] Last 200 lines of $log";
-          tail -n 200 "$log";
-          fi;
-          done' >/dev/console 2>&1
     locale: en_US
     keyboard:
         layout: en
         variant: us
+    timezone: Etc/UTC
     identity:
         hostname: ubuntu-server
         username: vagrant
@@ -62,26 +51,9 @@ autoinstall:
         - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
         - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
-        # Mirror the long-running package operations to the VM console and a guest log file.
-        - >-
-          curtin in-target --target=/target -- bash -c '
-          set -eo pipefail;
-          log=/var/log/packer-autoinstall.log;
-          if [ -w /dev/console ]; then
-            exec > >(tee -a "$log" /dev/console) 2>&1;
-          elif [ -w /dev/tty1 ]; then
-            exec > >(tee -a "$log" /dev/tty1) 2>&1;
-          else
-            exec > >(tee -a "$log") 2>&1;
-          fi;
-          echo "[autoinstall] $(date -Iseconds) Starting package update/upgrade";
-          echo "[autoinstall] writing package logs to $log";
-          apt-get -o Dpkg::Use-Pty=0 update;
-          echo "[autoinstall] $(date -Iseconds) Installing security upgrades";
-          env DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 upgrade --yes;
-          echo "[autoinstall] $(date -Iseconds) Installing base packages";
-          env DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 install --yes kmod unattended-upgrades open-vm-tools;
-          echo "[autoinstall] $(date -Iseconds) Package operations complete"'
+        - curtin in-target --target=/target -- apt-get update
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
         - >-
           curtin in-target --target=/target -- bash -c '
           version="$(dpkg-query -W -f="\$${Version}" kmod)";
