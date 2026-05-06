@@ -48,6 +48,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
   - `VCENTER_USER` - username to authenticate to the vCenter Server, e.g. `administrator@vsphere.local`
   - `VCENTER_PASS` - password to authenticate to the vCenter Server, e.g. `supersecretpassword`
   - `VCENTER_INSECURE_CONNECTION` - whether to allow insecure connection to the vCenter Server, e.g. `true` or `false`; prefer `false` and install the trusted vCenter CA on the runner/container where possible
+  - `PACKER_VM_PASSWORD` - password for the temporary `vagrant` provisioning account used by the Packer SSH communicator; the account is removed during the final template shutdown step
 
 #### Ubuntu template hardening
 
@@ -55,6 +56,8 @@ The Ubuntu 22.04 template build applies a small security baseline during autoins
 
 - Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
 - Disables direct root SSH login in the generated template.
+- Disables SSH password authentication during final template cleanup.
+- Enables `ufw` with default-deny inbound and SSH explicitly allowed, so every clone starts with an active firewall.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
 
 ##### CVE-2026-31431 Copy Fail mitigation
@@ -69,6 +72,6 @@ The final cleanup script fails the build if `algif_aead` is not blocked or if it
 
 To verify a built VM, check that `kmod` is at least `29-1ubuntu1.1`, `modprobe -n -v algif_aead` resolves to `/bin/false`, and `algif_aead` is absent from `/proc/modules`.
 
-##### Current SSH model
+##### Vagrant provisioning account
 
-The workflow still uses the temporary `vagrant` account and password-based Packer communicator during provisioning. Root SSH login is disabled, but moving the Packer communicator to SSH keys and removing the persistent `vagrant` password remains the next hardening step.
+The build uses a temporary `vagrant` account and password-based Packer SSH communicator during provisioning. During the final shutdown step, SSH password authentication is disabled and the `vagrant` account is removed from the template. The account password is stored as the `PACKER_VM_PASSWORD` repository secret and is not present in plaintext in any workflow file. Root SSH login is disabled.

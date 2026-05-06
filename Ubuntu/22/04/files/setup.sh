@@ -20,6 +20,12 @@ if grep -qE '^algif_aead ' /proc/modules; then
 	echo '> algif_aead is loaded; refusing to template a potentially vulnerable image'
 	exit 1
 fi
+# Configures firewall defaults; SSH must be explicitly allowed before enabling.
+echo '> Configuring ufw firewall ...'
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw --force enable
 # Cleans SSH keys.
 echo '> Cleaning SSH keys ...'
 rm -f /etc/ssh/ssh_host_*
@@ -31,9 +37,6 @@ hostnamectl set-hostname localhost
 echo '> Cleaning apt-get ...'
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-echo '> Cleaning temporary files and shell histories ...'
-rm -rf /tmp/* /var/tmp/*
-find /root /home -maxdepth 2 -type f \( -name '.*history' -o -name '.python_history' \) -exec truncate -s 0 {} \; 2>/dev/null || true
 # Reduces the default ext4 reserved blocks so template clones expose more usable
 # root space in df while still leaving a small safety buffer for root-owned files.
 echo '> Reducing reserved root filesystem blocks ...'
@@ -55,3 +58,6 @@ rm -rf /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg
 rm -rf /etc/cloud/cloud.cfg.d/99-installer.cfg
 echo 'datasource_list: [ VMware, NoCloud, ConfigDrive ]' | tee /etc/cloud/cloud.cfg.d/90_dpkg.cfg
 /usr/bin/cloud-init clean --logs --seed
+# Marks the finalizer script (uploaded via `file` provisioner) executable so
+# `shutdown_command` can invoke it.
+chmod 700 /tmp/packer-finalize-template.sh

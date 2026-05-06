@@ -23,6 +23,11 @@ build {
     reattach_cdroms = 1
   }
 
+  provisioner "file" {
+    source      = "./files/finalize.sh"
+    destination = "/tmp/packer-finalize-template.sh"
+  }
+
   provisioner "shell" {
     execute_command = "echo '${var.vmPassword}' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
     environment_vars = [

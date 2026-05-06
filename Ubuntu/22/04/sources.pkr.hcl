@@ -13,6 +13,7 @@ source "vsphere-iso" "base" {
     "/meta-data" = file("./files/meta-data")
     "/user-data" = templatefile("./files/user-data", {
       minimum_kmod_version = var.minimumKmodVersion
+      vm_password_hash     = var.vmPasswordHash
     })
   }
   cd_label = "cidata"
@@ -47,7 +48,7 @@ source "vsphere-iso" "base" {
     "boot",
     "<enter>"
   ]
-  shutdown_command = "echo '${var.vmPassword}' | sudo -S -E shutdown -P now"
+  shutdown_command = "sudo -n -E /tmp/packer-finalize-template.sh"
   shutdown_timeout = "15m"
 
   configuration_parameters = {

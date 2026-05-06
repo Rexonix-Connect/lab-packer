@@ -57,6 +57,11 @@ variable "vmPassword" {
   sensitive = true
 }
 
+variable "vmPasswordHash" {
+  type      = string
+  sensitive = true
+}
+
 variable "sshTimeout" {
   type    = string
   default = "45m"
