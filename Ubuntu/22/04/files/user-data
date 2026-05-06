@@ -4,10 +4,10 @@ autoinstall:
     early-commands:
         # Stop ssh for packer
         - sudo systemctl stop ssh
-        # Best-effort stream raw installer logs to the active console.
+        # Best-effort stream Curtin's installer log to the active console.
         - >-
-          sh -c 'echo "[autoinstall-debug] Streaming raw installer logs to /dev/console";
-          exec tail -n 0 -F /var/log/installer/subiquity-server-debug.log /var/log/installer/curtin-install.log' >/dev/console 2>&1 &
+          sh -c 'echo "[autoinstall-debug] Streaming /var/log/installer/curtin-install.log to /dev/console";
+          exec tail -n 0 -F /var/log/installer/curtin-install.log' >/dev/console 2>&1 &
     error-commands:
         - >-
           sh -c 'for log in /var/log/installer/subiquity*.log /var/log/installer/curtin-install.log; do
