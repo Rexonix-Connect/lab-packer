@@ -16,7 +16,7 @@ source "vsphere-iso" "base" {
       vm_password_hash     = var.vmPasswordHash
     })
   }
-  cd_label = "cidata"
+  cd_label = "CIDATA"
 
   network_adapters {
     network      = "${var.portGroup}"
