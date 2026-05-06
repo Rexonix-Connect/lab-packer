@@ -68,7 +68,7 @@ jobs:
           PKR_VAR_vmPasswordHash: ${{ steps.hash.outputs.vm_password_hash }}
         run: |
           cd Ubuntu/22/04
-          packer validate -timestamp-ui -only='vsphere-iso.base' .
+          packer validate -only='vsphere-iso.base' .
 
       - name: Packer build
         env:
