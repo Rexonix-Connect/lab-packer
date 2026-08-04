@@ -8,37 +8,55 @@ autoinstall:
     keyboard:
         layout: en
         variant: us
+    timezone: Etc/UTC
     identity:
         hostname: ubuntu-server
         username: vagrant
-        password: '$6$rounds=4096$5CU3LEj/MQvbkfPb$LmKEF9pCfU8R.dA.GemgE/8GT6r9blge3grJvdsVTMFKyLEQwzEF3SGWqAzjawY/XHRpWj4fOiLBrRyxJhIRJ1'
+        password: '${vm_password_hash}'
     ssh:
         install-server: yes
         allow-pw: yes
     storage:
         layout:
             name: direct
+            match:
+                size: largest
     apt:
+        geoip: false
         primary:
             - arches: [i386, amd64]
-              uri: "http://de.archive.ubuntu.com/ubuntu/"
+              uri: "http://archive.ubuntu.com/ubuntu/"
     packages:
-        - apt-transport-https
         - ca-certificates
         - curl
         - gnupg-agent
         - software-properties-common
         - ufw
+        - unattended-upgrades
+        - open-vm-tools
         - unzip
         - python3
         - python3-pip
-        - sshpass
+        - cloud-guest-utils
     user-data:
-        disable_root: false
+        disable_root: true
+        # Grow cloned VMs if their virtual disk is enlarged before first boot.
+        growpart:
+            mode: auto
+            devices: ['/']
+            ignore_growroot_disabled: false
+        resize_rootfs: true
     late-commands:
         - sed -i -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /target/etc/ssh/sshd_config
-        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /target/etc/ssh/sshd_config
+        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
         - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- apt-get update
-        - curtin in-target --target=/target -- apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}" kmod)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kmod_version}"'
+        - printf 'install algif_aead /bin/false\nblacklist algif_aead\n' > /target/etc/modprobe.d/manual-disable-algif_aead.conf
+        - curtin in-target --target=/target -- bash -c 'modprobe -n -v algif_aead | grep -q "/bin/false"'
