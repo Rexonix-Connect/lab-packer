@@ -13,7 +13,7 @@ on:
         description: Packer SSH wait timeout (for example 45m or 1h)
         type: string
         required: false
-        default: 1h30m
+        default: 45m
 
 permissions:
   contents: read
