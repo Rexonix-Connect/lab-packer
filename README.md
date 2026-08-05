@@ -107,6 +107,39 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 - Two additional sysctl baseline entries available on Noble's 6.8 kernel: `kernel.io_uring_disabled=2` (io_uring has been a recurring local privilege escalation source; re-enable on clones whose workloads need it) and `kernel.apparmor_restrict_unprivileged_userns=1` (asserts Noble's default AppArmor confinement of unprivileged user namespaces stays active).
 - Because Noble uses deb822 apt sources (`ubuntu.sources`), the installer-time security-pocket disable is undone by re-appending the `noble-security` stanza rather than un-commenting `sources.list` lines.
 
+### Build Windows Server 2019 / 2022 VM Templates
+
+[![Build Windows Server 2019 VM Template](../../actions/workflows/build_windows_server_2019_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2019_vm_template.yml)
+[![Build Windows Server 2022 VM Template](../../actions/workflows/build_windows_server_2022_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2022_vm_template.yml)
+
+The Windows builds boot the installation ISO together with the ESXi host's bundled VMware Tools ISO (`/vmimages/tools-isoimages/windows.iso`, present on ESXi by default): Windows Setup loads the `pvscsi` driver from the tools ISO, and a first-logon script installs the full VMware Tools (bringing up the `vmxnet3` driver) and enables WinRM for the Packer communicator. VMs run UEFI with Secure Boot, 4 vCPU / 8192 MB, and a 90 GB thin disk by default.
+
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `60`; defaults to `90`
+- `winrm_timeout` - optional Packer WinRM wait timeout covering the unattended install and first-logon tools installation, e.g. `2h` or `3h`; defaults to `2h`
+
+#### Windows template requirements
+
+Uses the same vCenter variables and secrets as the Ubuntu template workflows, plus:
+
+- `WINDOWS_SERVER_2019_X64_ISO_PATH` / `WINDOWS_SERVER_2022_X64_ISO_PATH` - path to the Windows Server ISO in the vCenter datastore
+- `WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME` / `WINDOWS_SERVER_2022_X64_VM_TEMPLATE_NAME` - name of the VM template to create
+
+Notes:
+
+- The `PACKER_VM_PASSWORD` secret is interpolated into `autounattend.xml`, so it must not contain the XML special characters `&`, `<`, `>`, `'` or `"`.
+- The default `windowsImageIndex` of `2` selects Standard (Desktop Experience) on standard Microsoft ISOs (`1` Standard Core, `3` Datacenter Core, `4` Datacenter Desktop Experience).
+- Without `windowsProductKey` set, evaluation media installs normally and licensed media prompts activation later; for volume licensing set the appropriate key or a public Microsoft KMS client setup key (GVLK).
+
+#### Windows template hardening
+
+- The `windows-update` Packer provisioner installs every applicable non-preview update during the build, and the verification step fails the build if any software update is still pending — templates ship with known vulnerabilities patched at build time.
+- UAC stays enabled throughout: the build uses `LocalAccountTokenFilterPolicy` for the WinRM session instead of disabling LUA, and removes that policy again during finalize.
+- Finalize re-hardens WinRM (no unencrypted transport, no basic authentication), removes autologon credentials and unattend answer files (including `C:\Windows\Panther` copies, which contain the build password), cleans the update cache, temporary files and event logs, and disables the `vagrant` provisioning account (disabled rather than deleted, since it owns the live WinRM session; clone customization manages accounts).
+- The generated answer-file CD carries the plaintext build credentials, so all CD-ROM devices are removed from the template (`remove_cdrom`).
+- The build intentionally does not run Sysprep: vCenter guest customization specifications sysprep Windows clones at deployment, which is the supported path for template-based cloning.
+
 ### Build Ubuntu 22.04 / 24.04 Desktop VM Templates
 
 [![Build Ubuntu 22.04 Desktop VM Template](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml)
