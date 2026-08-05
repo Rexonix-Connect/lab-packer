@@ -22,4 +22,7 @@ echo '> Installing GUI guest integration ...'
 apt-get install "${APT_OPTS[@]}" open-vm-tools-desktop
 
 echo '> Installing the Ubuntu desktop task ...'
-apt-get install "${APT_OPTS[@]}" ubuntu-desktop^
+# The Mesa Amber legacy-GPU stack in the desktop task is uninstallable next
+# to current Mesa on amd64 (libglapi-amber Breaks libglapi-mesa) and serves
+# pre-GL2 hardware only; VMware guests render via vmwgfx on current Mesa.
+apt-get install "${APT_OPTS[@]}" ubuntu-desktop^ libgl1-amber-dri- libglapi-amber-
