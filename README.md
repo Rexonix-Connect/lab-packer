@@ -163,3 +163,4 @@ Uses the same variables and secrets as the matching server template workflow (in
 - Desktop builds run with 4 vCPU / 8192 MB RAM (`cpuCount` / `memoryMb` variables; server builds keep 2 vCPU / 4096 MB).
 - The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
 - On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.
+- The Mesa Amber legacy-GPU packages (`libgl1-amber-dri`, `libglapi-amber`) are excluded from the desktop task: on amd64 they are uninstallable next to current Mesa (`libglapi-amber` Breaks `libglapi-mesa`), and they only serve pre-OpenGL-2.1 physical GPUs — VMware guests render through `vmwgfx` on current Mesa.
