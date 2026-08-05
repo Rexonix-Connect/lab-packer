@@ -67,6 +67,24 @@ variable "sshTimeout" {
   default = "45m"
 }
 
+# Installs the full Ubuntu desktop task on top of the server base, producing a
+# desktop VM template from the same server ISO with one build mechanism for
+# both flavors.
+variable "installDesktop" {
+  type    = bool
+  default = false
+}
+
+variable "cpuCount" {
+  type    = number
+  default = 2
+}
+
+variable "memoryMb" {
+  type    = number
+  default = 4096
+}
+
 variable "minimumKmodVersion" {
   type    = string
   default = "31+20240202-2ubuntu7.2"

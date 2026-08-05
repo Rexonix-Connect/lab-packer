@@ -67,6 +67,24 @@ variable "sshTimeout" {
   default = "45m"
 }
 
+# Installs the full Ubuntu desktop task on top of the server base, producing a
+# desktop VM template from the same server ISO (the desktop ISO's Ubiquity
+# installer has no autoinstall support on 22.04).
+variable "installDesktop" {
+  type    = bool
+  default = false
+}
+
+variable "cpuCount" {
+  type    = number
+  default = 2
+}
+
+variable "memoryMb" {
+  type    = number
+  default = 4096
+}
+
 variable "minimumKmodVersion" {
   type    = string
   default = "29-1ubuntu1.1"
