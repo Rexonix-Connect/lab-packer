@@ -54,24 +54,55 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 The Ubuntu 22.04 template build applies a small security baseline during autoinstall and final cleanup:
 
-- Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
+- Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration, and explicitly enables periodic unattended security upgrades (`/etc/apt/apt.conf.d/20auto-upgrades`) so clones keep patching known vulnerabilities on their own.
+- Enforces minimum package versions that fix the known CVEs listed below (`kmod`, kernel) and fails the build otherwise.
 - Disables direct root SSH login in the generated template.
 - Disables SSH password authentication during final template cleanup.
 - Enables `ufw` with default-deny inbound and SSH explicitly allowed, so every clone starts with an active firewall.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
 
-##### CVE-2026-31431 Copy Fail mitigation
+##### Known-CVE kernel mitigations
 
-Ubuntu 22.04 Jammy is affected by CVE-2026-31431, also known as Copy Fail. The build requires `kmod` version `29-1ubuntu1.1` or newer and writes a modprobe rule that blocks the vulnerable `algif_aead` kernel module:
+The build mitigates the 2026 Linux kernel local privilege escalation family following the Ubuntu Security Team guidance for each advisory. Every module below is blocked via `install <module> /bin/false` plus `blacklist <module>` in `/etc/modprobe.d/manual-disable-<name>.conf`, the initramfs is regenerated so the blocks apply from early boot, and the build fails if any module is not blocked or is loaded at templating time:
 
-- `/etc/modprobe.d/manual-disable-algif_aead.conf`
-- `install algif_aead /bin/false`
-- `blacklist algif_aead`
+- `algif_aead` — CVE-2026-31431 "Copy Fail" (AF_ALG AEAD crypto interface); also requires `kmod` >= `29-1ubuntu1.1`, which ships Ubuntu's own mitigation.
+- `act_pedit` — CVE-2026-46331 "pedit COW" (tc-pedit traffic control action).
+- `esp4`, `esp6` — CVE-2026-46300 "Fragnesia", CVE-2026-43284 "Dirty Frag", CVE-2026-43503 "DirtyClone" (IPsec ESP).
+- `rxrpc` — CVE-2026-43500 "Dirty Frag", CVE-2026-43503 "DirtyClone" (RxRPC/AFS).
 
-The final cleanup script fails the build if `algif_aead` is not blocked or if it is loaded. This mitigation can affect workloads that require this kernel crypto module, so test crypto-heavy or container workloads before using the template broadly.
+Independently of the module blocks, the build asserts that the installed kernel is at least `5.15.0-181.191`, the version that fixes all of the above plus CVE-2026-46333 "ssh-keysign-pwn", so the CVEs stay fixed even on clones that re-enable a blocked module.
 
-To verify a built VM, check that `kmod` is at least `29-1ubuntu1.1`, `modprobe -n -v algif_aead` resolves to `/bin/false`, and `algif_aead` is absent from `/proc/modules`.
+Caveats: blocking `esp4`/`esp6` breaks in-guest IPsec (for example StrongSwan VPN labs), `rxrpc` breaks AFS, `act_pedit` breaks tc-pedit rules, and `algif_aead` can affect crypto-heavy workloads. To re-enable a module on a clone that needs it, delete the matching `/etc/modprobe.d/manual-disable-<name>.conf`, run `update-initramfs -u`, and reboot — the enforced kernel minimum keeps the underlying CVEs patched.
+
+The template also ships `/etc/sysctl.d/90-lab-hardening.conf` reducing common exploitation surface (`kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`). The cleanup script verifies the live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
+
+To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*` >= `5.15.0-181.191`, `modprobe -n -v <module>` resolves to `/bin/false` for each blocked module, none of them appear in `/proc/modules`, and `sysctl kernel.dmesg_restrict` reports `1`.
 
 ##### Vagrant provisioning account
 
 The build uses a temporary `vagrant` account and password-based Packer SSH communicator during provisioning. During the final shutdown step, SSH password authentication is disabled and the `vagrant` account is removed from the template. The account password is stored as the `PACKER_VM_PASSWORD` repository secret and is not present in plaintext in any workflow file. Root SSH login is disabled.
+
+### Build Ubuntu 24.04 Server VM Template
+
+[![Build Ubuntu 24.04 Server VM Template](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml)
+
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+- `ssh_timeout` - optional Packer SSH communicator wait timeout, e.g. `45m` or `1h`; defaults to `45m`
+
+#### Ubuntu 24.04 template requirements
+
+Uses the same variables and secrets as the Ubuntu 22.04 template workflow, except:
+
+- `UBUNTU_24_04_SERVER_X64_ISO_PATH` - path to the Ubuntu 24.04 Server x64 ISO in the vCenter datastore, e.g. `iso/ubuntu-24.04-server-x64.iso`
+- `UBUNTU_24_04_SERVER_X64_VM_TEMPLATE_NAME` - name of the Ubuntu 24.04 Server x64 VM template to create, e.g. `ubuntu-24.04-server-x64-template`
+
+#### Ubuntu 24.04 template hardening
+
+Applies the same security baseline, known-CVE kernel module mitigations, verification steps, and temporary `vagrant` account handling as the Ubuntu 22.04 template, with Noble-specific values and additions:
+
+- Minimum `kmod` version `31+20240202-2ubuntu7.2` (Noble's CVE-2026-31431 "Copy Fail" mitigation release).
+- Minimum kernel version `6.8.0-124.124`, the Noble release fixing the same 2026 LPE family listed in the 22.04 section.
+- Two additional sysctl baseline entries available on Noble's 6.8 kernel: `kernel.io_uring_disabled=2` (io_uring has been a recurring local privilege escalation source; re-enable on clones whose workloads need it) and `kernel.apparmor_restrict_unprivileged_userns=1` (asserts Noble's default AppArmor confinement of unprivileged user namespaces stays active).
+- Because Noble uses deb822 apt sources (`ubuntu.sources`), the installer-time security-pocket disable is undone by re-appending the `noble-security` stanza rather than un-commenting `sources.list` lines.

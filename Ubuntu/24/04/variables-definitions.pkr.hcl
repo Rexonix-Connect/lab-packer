@@ -69,7 +69,7 @@ variable "sshTimeout" {
 
 variable "minimumKmodVersion" {
   type    = string
-  default = "29-1ubuntu1.1"
+  default = "31+20240202-2ubuntu7.2"
 }
 
 # Oldest kernel that fixes the 2026 LPE family: CVE-2026-31431 "Copy Fail",
@@ -78,7 +78,7 @@ variable "minimumKmodVersion" {
 # "ssh-keysign-pwn".
 variable "minimumKernelVersion" {
   type    = string
-  default = "5.15.0-181.191"
+  default = "6.8.0-124.124"
 }
 
 variable "isoPath" {

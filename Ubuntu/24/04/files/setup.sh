@@ -23,7 +23,7 @@ for mod in algif_aead act_pedit esp4 esp6 rxrpc; do
 	fi
 done
 echo '> Verifying hardening sysctls ...'
-for kv in kernel.dmesg_restrict=1 kernel.kptr_restrict=1 kernel.yama.ptrace_scope=1 kernel.unprivileged_bpf_disabled=2 net.core.bpf_jit_harden=2 fs.protected_fifos=2 fs.protected_regular=2; do
+for kv in kernel.dmesg_restrict=1 kernel.kptr_restrict=1 kernel.yama.ptrace_scope=1 kernel.unprivileged_bpf_disabled=2 net.core.bpf_jit_harden=2 fs.protected_fifos=2 fs.protected_regular=2 kernel.io_uring_disabled=2 kernel.apparmor_restrict_unprivileged_userns=1; do
 	key="${kv%%=*}"
 	want="${kv##*=}"
 	have="$(sysctl -n "${key}")"
