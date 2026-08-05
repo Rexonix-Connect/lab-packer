@@ -1,0 +1,93 @@
+#cloud-config
+autoinstall:
+    version: 1
+    early-commands:
+        # Stop ssh for packer; noble socket-activates ssh, so stop both units.
+        - sudo systemctl stop ssh.service ssh.socket || true
+    locale: en_US
+    keyboard:
+        layout: en
+        variant: us
+    timezone: Etc/UTC
+    identity:
+        hostname: ubuntu-server
+        username: vagrant
+        password: '${vm_password_hash}'
+    ssh:
+        install-server: yes
+        allow-pw: yes
+    storage:
+        layout:
+            name: direct
+            match:
+                size: largest
+    apt:
+        geoip: false
+        # Hide the -security pocket from the installer so subiquity's
+        # unattended-upgrades pass finds nothing to install (subiquity has no
+        # 'updates: none'); a late-command re-adds it before apt-get update.
+        disable_suites: [security]
+        primary:
+            - arches: [i386, amd64]
+              uri: "http://archive.ubuntu.com/ubuntu/"
+    packages:
+        - ca-certificates
+        - curl
+        - gnupg
+        - software-properties-common
+        - ufw
+        - unattended-upgrades
+        - open-vm-tools
+        - unzip
+        - python3
+        - python3-pip
+        - cloud-guest-utils
+    user-data:
+        disable_root: true
+        # Grow cloned VMs if their virtual disk is enlarged before first boot.
+        growpart:
+            mode: auto
+            devices: ['/']
+            ignore_growroot_disabled: false
+        resize_rootfs: true
+    late-commands:
+        - sed -i -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /target/etc/ssh/sshd_config
+        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
+        - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
+        - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
+        # Undo apt.disable_suites: noble uses deb822 sources and curtin drops
+        # the emptied -security stanza from ubuntu.sources, so append it back.
+        - >-
+          printf '\nTypes: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' >> /target/etc/apt/sources.list.d/ubuntu.sources
+        - curtin in-target --target=/target -- apt-get update
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}" kmod)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kmod_version}"'
+        # CVE-2026-31431 "Copy Fail": AF_ALG AEAD interface.
+        - printf 'install algif_aead /bin/false\nblacklist algif_aead\n' > /target/etc/modprobe.d/manual-disable-algif_aead.conf
+        # CVE-2026-46331 "pedit COW": tc-pedit traffic control action.
+        - printf 'install act_pedit /bin/false\nblacklist act_pedit\n' > /target/etc/modprobe.d/manual-disable-act_pedit.conf
+        # CVE-2026-46300 "Fragnesia", CVE-2026-43284 "Dirty Frag" and
+        # CVE-2026-43503 "DirtyClone": IPsec ESP. Remove this file (and rebuild
+        # the initramfs) on clones that must run IPsec/StrongSwan workloads.
+        - printf 'install esp4 /bin/false\nblacklist esp4\ninstall esp6 /bin/false\nblacklist esp6\n' > /target/etc/modprobe.d/manual-disable-esp.conf
+        # CVE-2026-43500 "Dirty Frag" and CVE-2026-43503 "DirtyClone": RxRPC/AFS.
+        - printf 'install rxrpc /bin/false\nblacklist rxrpc\n' > /target/etc/modprobe.d/manual-disable-rxrpc.conf
+        - >-
+          printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\nkernel.io_uring_disabled = 2\nkernel.apparmor_restrict_unprivileged_userns = 1\n' > /target/etc/sysctl.d/90-lab-hardening.conf
+        # Keep clones patching known vulnerabilities on their own.
+        - printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /target/etc/apt/apt.conf.d/20auto-upgrades
+        # modprobe.d is bundled into the initramfs, so rebuild it after the blocks.
+        - curtin in-target --target=/target -- update-initramfs -u
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          for mod in algif_aead act_pedit esp4 esp6 rxrpc; do
+          modprobe -n -v "$${mod}" | grep -q "/bin/false" || exit 1;
+          done'
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}\n" "linux-image-[0-9]*" | sort -V | tail -n 1)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kernel_version}"'

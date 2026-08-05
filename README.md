@@ -81,3 +81,28 @@ To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*
 ##### Vagrant provisioning account
 
 The build uses a temporary `vagrant` account and password-based Packer SSH communicator during provisioning. During the final shutdown step, SSH password authentication is disabled and the `vagrant` account is removed from the template. The account password is stored as the `PACKER_VM_PASSWORD` repository secret and is not present in plaintext in any workflow file. Root SSH login is disabled.
+
+### Build Ubuntu 24.04 Server VM Template
+
+[![Build Ubuntu 24.04 Server VM Template](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml)
+
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+- `ssh_timeout` - optional Packer SSH communicator wait timeout, e.g. `45m` or `1h`; defaults to `45m`
+
+#### Ubuntu 24.04 template requirements
+
+Uses the same variables and secrets as the Ubuntu 22.04 template workflow, except:
+
+- `UBUNTU_24_04_SERVER_X64_ISO_PATH` - path to the Ubuntu 24.04 Server x64 ISO in the vCenter datastore, e.g. `iso/ubuntu-24.04-server-x64.iso`
+- `UBUNTU_24_04_SERVER_X64_VM_TEMPLATE_NAME` - name of the Ubuntu 24.04 Server x64 VM template to create, e.g. `ubuntu-24.04-server-x64-template`
+
+#### Ubuntu 24.04 template hardening
+
+Applies the same security baseline, known-CVE kernel module mitigations, verification steps, and temporary `vagrant` account handling as the Ubuntu 22.04 template, with Noble-specific values and additions:
+
+- Minimum `kmod` version `31+20240202-2ubuntu7.2` (Noble's CVE-2026-31431 "Copy Fail" mitigation release).
+- Minimum kernel version `6.8.0-124.124`, the Noble release fixing the same 2026 LPE family listed in the 22.04 section.
+- Two additional sysctl baseline entries available on Noble's 6.8 kernel: `kernel.io_uring_disabled=2` (io_uring has been a recurring local privilege escalation source; re-enable on clones whose workloads need it) and `kernel.apparmor_restrict_unprivileged_userns=1` (asserts Noble's default AppArmor confinement of unprivileged user namespaces stays active).
+- Because Noble uses deb822 apt sources (`ubuntu.sources`), the installer-time security-pocket disable is undone by re-appending the `noble-security` stanza rather than un-commenting `sources.list` lines.
