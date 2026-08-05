@@ -1,8 +1,9 @@
 packer {
   required_version = "= 1.10.1"
   required_plugins {
+    # 2.2.0+ is required for vApp property support in the vsphere-iso builder.
     vsphere = {
-      version = "= 2.1.2"
+      version = "= 2.3.0"
       source  = "github.com/hashicorp/vsphere"
     }
     ansible = {
