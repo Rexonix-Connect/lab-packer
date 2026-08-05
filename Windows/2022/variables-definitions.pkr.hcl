@@ -101,6 +101,13 @@ variable "windowsProductKey" {
   sensitive = true
 }
 
+# Pinned Cloudbase-Init release installed into the template for deploy-time
+# personalization (vApp form via OVF ISO, NoCloud/ConfigDrive, guestinfo).
+variable "cloudbaseInitVersion" {
+  type    = string
+  default = "1.1.8"
+}
+
 variable "windowsLanguage" {
   type    = string
   default = "en-US"
