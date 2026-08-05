@@ -10,9 +10,9 @@ source "vsphere-iso" "base" {
   iso_paths    = ["${var.isoPath}"]
 
   cd_content = {
-    "/meta-data"           = file("./files/meta-data")
-    "/ovf-network.py"      = file("./files/ovf-network.py")
-    "/ovf-network.service" = file("./files/ovf-network.service")
+    "/meta-data"            = file("./files/meta-data")
+    "/ovf-settings.py"      = file("./files/ovf-settings.py")
+    "/ovf-settings.service" = file("./files/ovf-settings.service")
     "/user-data" = templatefile("./files/user-data", {
       minimum_kmod_version   = var.minimumKmodVersion
       minimum_kernel_version = var.minimumKernelVersion
@@ -34,6 +34,7 @@ source "vsphere-iso" "base" {
   vapp {
     properties = {
       "hostname"       = ""
+      "username"       = ""
       "public-keys"    = ""
       "password"       = ""
       "user-data"      = ""

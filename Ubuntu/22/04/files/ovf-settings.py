@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""Apply network settings from the vSphere OVF environment via netplan.
+"""Apply deploy-time settings from the vSphere OVF environment.
 
-Runs before systemd-networkd on every boot (see ovf-network.service), so
-editing the vApp properties and rebooting re-applies them. Fails open: any
-error leaves the existing network configuration untouched.
+network.* properties become a netplan override; the username property becomes
+a cloud-init default_user override, so the form's password/public-keys apply
+to the chosen account. Runs before systemd-networkd and cloud-init on every
+boot (see ovf-settings.service); network settings re-apply on reboot, while
+the username only matters on the first boot of a deployment. Fails open: any
+error leaves the existing configuration untouched.
 """
 import ipaddress
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
 NETPLAN = "/etc/netplan/90-ovf.yaml"
+USER_CFG = "/etc/cloud/cloud.cfg.d/91-ovf-user.cfg"
 OVF_NS = "{http://schemas.dmtf.org/ovf/environment/1}"
 NET_KEYS = ("network.ip4", "network.gw4", "network.ip6", "network.gw6",
             "network.dns", "network.domain")
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+RESERVED_USERNAMES = {"root", "vagrant", "recovery", "administrator"}
 
 
 def get_ovf_env():
@@ -76,13 +83,13 @@ def build_netplan(props, ifname):
     if ip6:
         ipaddress.ip_interface(ip6)
         addresses.append(ip6)
-    for address in filter(None, [gw4, gw6]) :
+    for address in filter(None, [gw4, gw6]):
         ipaddress.ip_address(address)
     for server in dns:
         ipaddress.ip_address(server)
 
     lines = [
-        "# Written by ovf-network.service from OVF environment properties.",
+        "# Written by ovf-settings.service from OVF environment properties.",
         "network:",
         "  version: 2",
         "  ethernets:",
@@ -112,38 +119,75 @@ def build_netplan(props, ifname):
     return "\n".join(lines) + "\n"
 
 
-def remove_config():
-    if os.path.exists(NETPLAN):
-        os.remove(NETPLAN)
-        subprocess.run(["netplan", "generate"], timeout=30)
+def build_user_cfg(username):
+    # Complete default_user spec (Ubuntu server defaults) rather than relying
+    # on cloud-init's fragment merge depth; the form's password/public-keys
+    # target the default user, so they follow the rename automatically.
+    return "\n".join([
+        "# Written by ovf-settings.service from OVF environment properties.",
+        "system_info:",
+        "  default_user:",
+        "    name: %s" % username,
+        "    gecos: %s" % username,
+        "    groups: [adm, cdrom, dip, lxd, plugdev, sudo]",
+        "    lock_passwd: true",
+        "    shell: /bin/bash",
+        "    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]",
+    ]) + "\n"
+
+
+def write_if_changed(path, content, run_after=None):
+    current = None
+    if os.path.exists(path):
+        with open(path) as fh:
+            current = fh.read()
+    if content != current:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        if run_after:
+            subprocess.run(run_after, timeout=30)
+
+
+def remove_if_present(path, run_after=None):
+    if os.path.exists(path):
+        os.remove(path)
+        if run_after:
+            subprocess.run(run_after, timeout=30)
+
+
+def apply_user(props):
+    username = props.get("username", "")
+    if not username:
+        return remove_if_present(USER_CFG)
+    if not USERNAME_RE.match(username) or username.lower() in RESERVED_USERNAMES:
+        print("ovf-settings: ignoring invalid or reserved username %r"
+              % username, file=sys.stderr)
+        return remove_if_present(USER_CFG)
+    write_if_changed(USER_CFG, build_user_cfg(username))
+
+
+def apply_network(props):
+    if not any(props.get(key) for key in NET_KEYS):
+        return remove_if_present(NETPLAN, ["netplan", "generate"])
+    ifname = pick_interface()
+    if not ifname:
+        print("ovf-settings: no ethernet interface found", file=sys.stderr)
+        return
+    write_if_changed(NETPLAN, build_netplan(props, ifname),
+                     ["netplan", "generate"])
 
 
 def main():
     xml_text = get_ovf_env()
-    if not xml_text:
-        return remove_config()
-    props = parse_props(xml_text)
-    if not any(props.get(key) for key in NET_KEYS):
-        return remove_config()
-    ifname = pick_interface()
-    if not ifname:
-        print("ovf-network: no ethernet interface found", file=sys.stderr)
-        return
-    content = build_netplan(props, ifname)
-    current = None
-    if os.path.exists(NETPLAN):
-        with open(NETPLAN) as fh:
-            current = fh.read()
-    if content != current:
-        fd = os.open(NETPLAN, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(content)
-        subprocess.run(["netplan", "generate"], timeout=30)
+    props = parse_props(xml_text) if xml_text else {}
+    apply_user(props)
+    apply_network(props)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:  # never block boot
-        print("ovf-network: %s" % exc, file=sys.stderr)
+        print("ovf-settings: %s" % exc, file=sys.stderr)
     sys.exit(0)

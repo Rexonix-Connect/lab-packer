@@ -41,6 +41,7 @@ source "vsphere-iso" "base" {
   vapp {
     properties = {
       "hostname"       = ""
+      "username"       = ""
       "public-keys"    = ""
       "password"       = ""
       "user-data"      = ""

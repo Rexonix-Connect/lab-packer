@@ -43,8 +43,8 @@ if ! passwd -S recovery | grep -q ' P '; then
 	echo '> recovery account has no usable password'
 	exit 1
 fi
-[ -x /usr/local/sbin/ovf-network.py ]
-systemctl is-enabled ovf-network.service >/dev/null
+[ -x /usr/local/sbin/ovf-settings.py ]
+systemctl is-enabled ovf-settings.service >/dev/null
 # Configures firewall defaults; SSH must be explicitly allowed before enabling.
 echo '> Configuring ufw firewall ...'
 ufw default deny incoming

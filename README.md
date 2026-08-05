@@ -190,6 +190,7 @@ Every template's content library OVF item carries user-configurable OVF properti
 | Property | Meaning |
 | --- | --- |
 | `hostname` | Guest hostname (Linux: cloud-init; Windows: Cloudbase-Init computer rename, reboots once) |
+| `username` | Managed admin account: Linux renames the first-boot default user (default `ubuntu`), Windows creates it and adds it to `Administrators` (default `Administrator`); `password`/`public-keys` apply to this account; first boot only; reserved names (`root`, `vagrant`, `recovery`, `Administrator`) are ignored |
 | `public-keys` | SSH public key(s) authorized for the default user (Linux) / Administrator (Windows) |
 | `password` | Account password: Linux default-user password (cloud-init), Windows Administrator password |
 | `user-data` | **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the basic fields |
@@ -200,7 +201,7 @@ Every template's content library OVF item carries user-configurable OVF properti
 | `network.dns` | DNS servers, space or comma separated, IPv4 and IPv6 mixed freely |
 | `network.domain` | DNS search domain(s) |
 
-Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*` fields are applied by `/usr/local/sbin/ovf-network.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO, and `ovf-network.ps1` (a Cloudbase-Init local script, run once per deployment) applies the `network.*` fields.
+Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*` and `username` fields are applied by `/usr/local/sbin/ovf-settings.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO, and `ovf-network.ps1` (a Cloudbase-Init local script, run once per deployment) applies the `network.*` fields.
 
 Precedence: explicitly injected `guestinfo.metadata`/`guestinfo.userdata` (e.g. from Terraform) outranks the form on Linux; vCenter guest customization specs continue to work unchanged on both OS families and are the right tool for bulk cloning.
 
@@ -213,4 +214,4 @@ The same first-boot machinery works outside vSphere because the datasource lists
 - **Ubuntu**: log in on the hypervisor console as `recovery` with the `RECOVERY_PASSWORD` secret value (sudo-capable). SSH password authentication is disabled in the templates, so this password is useless over the network by design.
 - **Windows**: log in on the console as `Administrator` with the `PACKER_VM_PASSWORD` secret value (or the value set via the form's `password` field at deploy time).
 
-First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log` (Linux), `C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\cloudbase-init.log` (Windows), and `journalctl -u ovf-network` for the network helper.
+First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log` (Linux), `C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\cloudbase-init.log` (Windows), and `journalctl -u ovf-settings` for the network helper.
