@@ -76,8 +76,10 @@ autoinstall:
         - printf 'install esp4 /bin/false\nblacklist esp4\ninstall esp6 /bin/false\nblacklist esp6\n' > /target/etc/modprobe.d/manual-disable-esp.conf
         # CVE-2026-43500 "Dirty Frag" and CVE-2026-43503 "DirtyClone": RxRPC/AFS.
         - printf 'install rxrpc /bin/false\nblacklist rxrpc\n' > /target/etc/modprobe.d/manual-disable-rxrpc.conf
+        # 'zz-' so this applies after Ubuntu's unnumbered protect-links.conf,
+        # which sorts after numeric prefixes and resets fs.protected_fifos=1.
         - >-
-          printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\nkernel.io_uring_disabled = 2\nkernel.apparmor_restrict_unprivileged_userns = 1\n' > /target/etc/sysctl.d/90-lab-hardening.conf
+          printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\nkernel.io_uring_disabled = 2\nkernel.apparmor_restrict_unprivileged_userns = 1\n' > /target/etc/sysctl.d/zz-lab-hardening.conf
         # Keep clones patching known vulnerabilities on their own.
         - printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /target/etc/apt/apt.conf.d/20auto-upgrades
         # modprobe.d is bundled into the initramfs, so rebuild it after the blocks.
