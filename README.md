@@ -106,3 +106,27 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 - Minimum kernel version `6.8.0-124.124`, the Noble release fixing the same 2026 LPE family listed in the 22.04 section.
 - Two additional sysctl baseline entries available on Noble's 6.8 kernel: `kernel.io_uring_disabled=2` (io_uring has been a recurring local privilege escalation source; re-enable on clones whose workloads need it) and `kernel.apparmor_restrict_unprivileged_userns=1` (asserts Noble's default AppArmor confinement of unprivileged user namespaces stays active).
 - Because Noble uses deb822 apt sources (`ubuntu.sources`), the installer-time security-pocket disable is undone by re-appending the `noble-security` stanza rather than un-commenting `sources.list` lines.
+
+### Build Ubuntu 22.04 / 24.04 Desktop VM Templates
+
+[![Build Ubuntu 22.04 Desktop VM Template](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml)
+[![Build Ubuntu 24.04 Desktop VM Template](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml)
+
+The desktop workflows reuse the corresponding **server** build and ISO: the same autoinstall runs with `installDesktop=true`, which additionally installs the `ubuntu-desktop^` task plus `open-vm-tools-desktop` during the install phase. This keeps one build mechanism for both flavors on both releases (on 22.04 the desktop ISO's Ubiquity installer has no autoinstall support at all, and on 24.04 it avoids maintaining a second autoinstall variant). All hardening, known-CVE mitigations, verification, and cleanup from the server templates apply unchanged.
+
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+- `ssh_timeout` - optional Packer SSH communicator wait timeout; defaults to `1h30m` because the desktop task adds a few gigabytes of packages to the install phase
+
+#### Ubuntu desktop template requirements
+
+Uses the same variables and secrets as the matching server template workflow (including the **server** ISO path variable), plus:
+
+- `UBUNTU_22_04_DESKTOP_X64_VM_TEMPLATE_NAME` / `UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME` - name of the desktop VM template to create, e.g. `ubuntu-22.04-desktop-x64-template`
+
+#### Desktop template notes
+
+- Desktop builds run with 4 vCPU / 8192 MB RAM (`cpuCount` / `memoryMb` variables; server builds keep 2 vCPU / 4096 MB).
+- The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
+- On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.

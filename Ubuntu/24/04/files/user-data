@@ -62,6 +62,10 @@ autoinstall:
         - curtin in-target --target=/target -- apt-get update
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
+%{ if install_desktop ~}
+        # Desktop flavor: GNOME desktop task plus GUI guest integration.
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes ubuntu-desktop^ open-vm-tools-desktop
+%{ endif ~}
         - >-
           curtin in-target --target=/target -- bash -c '
           version="$(dpkg-query -W -f="\$${Version}" kmod)";
