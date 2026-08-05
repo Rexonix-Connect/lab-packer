@@ -49,6 +49,7 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
   - `VCENTER_PASS` - password to authenticate to the vCenter Server, e.g. `supersecretpassword`
   - `VCENTER_INSECURE_CONNECTION` - whether to allow insecure connection to the vCenter Server, e.g. `true` or `false`; prefer `false` and install the trusted vCenter CA on the runner/container where possible
   - `PACKER_VM_PASSWORD` - password for the temporary `vagrant` provisioning account used by the Packer SSH communicator; the account is removed during the final template shutdown step
+  - `RECOVERY_PASSWORD` - password for the permanent `recovery` console break-glass account baked into the Ubuntu templates (hashed at build time; see "Deploying the templates")
 
 #### Ubuntu template hardening
 
@@ -57,6 +58,7 @@ The Ubuntu 22.04 template build applies a small security baseline during autoins
 - Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration, and explicitly enables periodic unattended security upgrades (`/etc/apt/apt.conf.d/20auto-upgrades`) so clones keep patching known vulnerabilities on their own.
 - Enforces minimum package versions that fix the known CVEs listed below (`kmod`, kernel) and fails the build otherwise.
 - Disables direct root SSH login in the generated template.
+- Bakes a `recovery` sudo user (password from the `RECOVERY_PASSWORD` secret) as console break-glass: because SSH password authentication is disabled, the password only works on the hypervisor console, so a clone whose first-boot configuration fails is still reachable.
 - Disables SSH password authentication during final template cleanup.
 - Enables `ufw` with default-deny inbound and SSH explicitly allowed, so every clone starts with an active firewall.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
@@ -152,6 +154,7 @@ Notes:
 - Finalize removes autologon credentials and unattend answer files (including `C:\Windows\Panther` copies, which contain the build password) and cleans the update cache, temporary files and event logs. The session-hostile steps — re-hardening WinRM (no unencrypted transport, no basic authentication), removing `LocalAccountTokenFilterPolicy`, disabling the `vagrant` provisioning account (disabled rather than deleted; clone customization manages accounts) and the power-off — run from a detached one-shot SYSTEM scheduled task, because every WinRM request re-authenticates and changing WinRM auth or the build account from inside Packer's own session would sever it mid-shutdown. The task deletes the finalize scripts and itself before powering off, so nothing is left behind in the template.
 - The generated answer-file CD carries the plaintext build credentials, so all CD-ROM devices are removed from the template (`remove_cdrom`).
 - The build intentionally does not run Sysprep: vCenter guest customization specifications sysprep Windows clones at deployment, which is the supported path for template-based cloning.
+- A pinned Cloudbase-Init (service account LocalSystem, automatic start) provides deploy-time personalization from the vApp property form (OVF ISO transport), NoCloud/ConfigDrive (non-VMware platforms), and VMware guestinfo metadata; when none of these has data — for example a clone deployed with a customization spec — the run idles and changes nothing.
 
 ### Build Ubuntu 22.04 / 24.04 Desktop VM Templates
 
@@ -177,3 +180,37 @@ Uses the same variables and secrets as the matching server template workflow (in
 - The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
 - On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.
 - The Mesa Amber legacy-GPU packages (`libgl1-amber-dri`, `libglapi-amber`) are excluded from the desktop task: on amd64 they are uninstallable next to current Mesa (`libglapi-amber` Breaks `libglapi-mesa`), and they only serve pre-OpenGL-2.1 physical GPUs — VMware guests render through `vmwgfx` on current Mesa.
+
+## Deploying the templates
+
+### vApp deploy form (vSphere)
+
+Every template's content library OVF item carries user-configurable OVF properties, so the vSphere "New VM from This Template" / "Deploy From Library" wizard shows a **Customize template** page. All fields default to empty, which means "leave as-is": DHCP/SLAAC networking and no personalization, identical to deploying before this feature existed.
+
+| Property | Meaning |
+| --- | --- |
+| `hostname` | Guest hostname (Linux: cloud-init; Windows: Cloudbase-Init computer rename, reboots once) |
+| `public-keys` | SSH public key(s) authorized for the default user (Linux) / Administrator (Windows) |
+| `password` | Account password: Linux default-user password (cloud-init), Windows Administrator password |
+| `user-data` | **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the basic fields |
+| `network.ip4` | Static IPv4 address in CIDR form, e.g. `192.168.10.5/24`; empty = DHCP |
+| `network.gw4` | IPv4 default gateway |
+| `network.ip6` | Static IPv6 address in CIDR form, e.g. `2001:db8:1::5/64`; empty = SLAAC/router advertisements |
+| `network.gw6` | IPv6 default gateway |
+| `network.dns` | DNS servers, space or comma separated, IPv4 and IPv6 mixed freely |
+| `network.domain` | DNS search domain(s) |
+
+Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*` fields are applied by `/usr/local/sbin/ovf-network.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO, and `ovf-network.ps1` (a Cloudbase-Init local script, run once per deployment) applies the `network.*` fields.
+
+Precedence: explicitly injected `guestinfo.metadata`/`guestinfo.userdata` (e.g. from Terraform) outranks the form on Linux; vCenter guest customization specs continue to work unchanged on both OS families and are the right tool for bulk cloning.
+
+### Non-VMware platforms
+
+The same first-boot machinery works outside vSphere because the datasource lists are platform-portable (`NoCloud, ConfigDrive, VMware, OVF, None` on Linux; NoCloud + ConfigDrive services on Windows). On Proxmox VE, import the disk and attach a cloud-init drive: `citype=nocloud` for the Ubuntu templates, `citype=configdrive2` for the Windows templates (Proxmox defaults per ostype). The vApp form itself is vSphere-only — on other platforms supply the equivalent settings through the platform's cloud-init mechanism. `qemu-guest-agent` is not preinstalled; add it on KVM-based clones for IP reporting.
+
+### Console recovery (break-glass)
+
+- **Ubuntu**: log in on the hypervisor console as `recovery` with the `RECOVERY_PASSWORD` secret value (sudo-capable). SSH password authentication is disabled in the templates, so this password is useless over the network by design.
+- **Windows**: log in on the console as `Administrator` with the `PACKER_VM_PASSWORD` secret value (or the value set via the form's `password` field at deploy time).
+
+First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log` (Linux), `C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\cloudbase-init.log` (Windows), and `journalctl -u ovf-network` for the network helper.
