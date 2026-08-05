@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply OVF environment network settings via netplan
+ConditionVirtualization=vmware
+ConditionPathExists=/usr/local/sbin/ovf-network.py
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=systemd-networkd.service network-pre.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/local/sbin/ovf-network.py
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

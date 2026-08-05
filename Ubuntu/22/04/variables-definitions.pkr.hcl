@@ -62,6 +62,14 @@ variable "vmPasswordHash" {
   sensitive = true
 }
 
+# Console break-glass account password hash (crypt SHA-512); the password
+# only works on the hypervisor console because SSH password authentication
+# is disabled during finalize.
+variable "recoveryPasswordHash" {
+  type      = string
+  sensitive = true
+}
+
 variable "sshTimeout" {
   type    = string
   default = "45m"

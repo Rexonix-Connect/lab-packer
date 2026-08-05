@@ -10,11 +10,14 @@ source "vsphere-iso" "base" {
   iso_paths    = ["${var.isoPath}"]
 
   cd_content = {
-    "/meta-data" = file("./files/meta-data")
+    "/meta-data"           = file("./files/meta-data")
+    "/ovf-network.py"      = file("./files/ovf-network.py")
+    "/ovf-network.service" = file("./files/ovf-network.service")
     "/user-data" = templatefile("./files/user-data", {
       minimum_kmod_version   = var.minimumKmodVersion
       minimum_kernel_version = var.minimumKernelVersion
       vm_password_hash       = var.vmPasswordHash
+      recovery_password_hash = var.recoveryPasswordHash
     })
   }
   cd_label = "CIDATA"
