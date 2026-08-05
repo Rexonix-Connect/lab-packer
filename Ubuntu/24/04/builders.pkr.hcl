@@ -31,6 +31,14 @@ build {
   provisioner "shell" {
     execute_command = "echo '${var.vmPassword}' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
     environment_vars = [
+      "INSTALL_DESKTOP=${var.installDesktop}",
+    ]
+    scripts = ["./files/install-desktop.sh"]
+  }
+
+  provisioner "shell" {
+    execute_command = "echo '${var.vmPassword}' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
+    environment_vars = [
       "BUILD_USERNAME=${var.vmUsername}",
     ]
     scripts           = ["./files/setup.sh"]

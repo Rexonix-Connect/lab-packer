@@ -145,12 +145,12 @@ Notes:
 [![Build Ubuntu 22.04 Desktop VM Template](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml)
 [![Build Ubuntu 24.04 Desktop VM Template](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml)
 
-The desktop workflows reuse the corresponding **server** build and ISO: the same autoinstall runs with `installDesktop=true`, which additionally installs the `ubuntu-desktop^` task plus `open-vm-tools-desktop` during the install phase. This keeps one build mechanism for both flavors on both releases (on 22.04 the desktop ISO's Ubiquity installer has no autoinstall support at all, and on 24.04 it avoids maintaining a second autoinstall variant). All hardening, known-CVE mitigations, verification, and cleanup from the server templates apply unchanged.
+The desktop workflows reuse the corresponding **server** build and ISO: the same autoinstall installs the server base, and with `installDesktop=true` a provisioning step then installs the `ubuntu-desktop^` task plus `open-vm-tools-desktop` over SSH on the booted system. This keeps one build mechanism for both flavors on both releases (on 22.04 the desktop ISO's Ubiquity installer has no autoinstall support at all, and on 24.04 it avoids maintaining a second autoinstall variant). The desktop task is deliberately not installed as an autoinstall late-command: its snap-backed packages need a running snapd, which does not exist in the installer chroot, and running it during provisioning keeps the multi-gigabyte download outside the SSH wait timeout with full apt output in the workflow log. All hardening, known-CVE mitigations, verification, and cleanup from the server templates apply unchanged.
 
 #### Workflow inputs
 
 - `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
-- `ssh_timeout` - optional Packer SSH communicator wait timeout; defaults to `1h30m` because the desktop task adds a few gigabytes of packages to the install phase
+- `ssh_timeout` - optional Packer SSH communicator wait timeout, e.g. `45m` or `1h`; defaults to `45m` (the desktop task installs during provisioning, after SSH is up, so the wait matches the server build)
 
 #### Ubuntu desktop template requirements
 

@@ -15,7 +15,6 @@ source "vsphere-iso" "base" {
       minimum_kmod_version   = var.minimumKmodVersion
       minimum_kernel_version = var.minimumKernelVersion
       vm_password_hash       = var.vmPasswordHash
-      install_desktop        = var.installDesktop
     })
   }
   cd_label = "CIDATA"
