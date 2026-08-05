@@ -1,7 +1,7 @@
 source "vsphere-iso" "base" {
 
-  CPUs                 = 2
-  RAM                  = 4096
+  CPUs                 = var.cpuCount
+  RAM                  = var.memoryMb
   disk_controller_type = ["pvscsi"]
   guest_os_type        = "ubuntu64Guest"
 
@@ -15,6 +15,7 @@ source "vsphere-iso" "base" {
       minimum_kmod_version   = var.minimumKmodVersion
       minimum_kernel_version = var.minimumKernelVersion
       vm_password_hash       = var.vmPasswordHash
+      install_desktop        = var.installDesktop
     })
   }
   cd_label = "CIDATA"

@@ -74,7 +74,7 @@ Independently of the module blocks, the build asserts that the installed kernel 
 
 Caveats: blocking `esp4`/`esp6` breaks in-guest IPsec (for example StrongSwan VPN labs), `rxrpc` breaks AFS, `act_pedit` breaks tc-pedit rules, and `algif_aead` can affect crypto-heavy workloads. To re-enable a module on a clone that needs it, delete the matching `/etc/modprobe.d/manual-disable-<name>.conf`, run `update-initramfs -u`, and reboot — the enforced kernel minimum keeps the underlying CVEs patched.
 
-The template also ships `/etc/sysctl.d/90-lab-hardening.conf` reducing common exploitation surface (`kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`). The cleanup script verifies the live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
+The template also ships `/etc/sysctl.d/zz-lab-hardening.conf` (named to apply after Ubuntu's unnumbered `protect-links.conf`, which would otherwise reset `fs.protected_fifos` to `1`) reducing common exploitation surface (`kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`). The cleanup script verifies the live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
 
 To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*` >= `5.15.0-181.191`, `modprobe -n -v <module>` resolves to `/bin/false` for each blocked module, none of them appear in `/proc/modules`, and `sysctl kernel.dmesg_restrict` reports `1`.
 
@@ -139,3 +139,27 @@ Notes:
 - Finalize re-hardens WinRM (no unencrypted transport, no basic authentication), removes autologon credentials and unattend answer files (including `C:\Windows\Panther` copies, which contain the build password), cleans the update cache, temporary files and event logs, and disables the `vagrant` provisioning account (disabled rather than deleted, since it owns the live WinRM session; clone customization manages accounts).
 - The generated answer-file CD carries the plaintext build credentials, so all CD-ROM devices are removed from the template (`remove_cdrom`).
 - The build intentionally does not run Sysprep: vCenter guest customization specifications sysprep Windows clones at deployment, which is the supported path for template-based cloning.
+
+### Build Ubuntu 22.04 / 24.04 Desktop VM Templates
+
+[![Build Ubuntu 22.04 Desktop VM Template](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_22_04_desktop_vm_template.yml)
+[![Build Ubuntu 24.04 Desktop VM Template](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_desktop_vm_template.yml)
+
+The desktop workflows reuse the corresponding **server** build and ISO: the same autoinstall runs with `installDesktop=true`, which additionally installs the `ubuntu-desktop^` task plus `open-vm-tools-desktop` during the install phase. This keeps one build mechanism for both flavors on both releases (on 22.04 the desktop ISO's Ubiquity installer has no autoinstall support at all, and on 24.04 it avoids maintaining a second autoinstall variant). All hardening, known-CVE mitigations, verification, and cleanup from the server templates apply unchanged.
+
+#### Workflow inputs
+
+- `disk_size_gb` - optional numeric disk size for the VM template in GB, minimum `25`, e.g. `100`; defaults to `60`
+- `ssh_timeout` - optional Packer SSH communicator wait timeout; defaults to `1h30m` because the desktop task adds a few gigabytes of packages to the install phase
+
+#### Ubuntu desktop template requirements
+
+Uses the same variables and secrets as the matching server template workflow (including the **server** ISO path variable), plus:
+
+- `UBUNTU_22_04_DESKTOP_X64_VM_TEMPLATE_NAME` / `UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME` - name of the desktop VM template to create, e.g. `ubuntu-22.04-desktop-x64-template`
+
+#### Desktop template notes
+
+- Desktop builds run with 4 vCPU / 8192 MB RAM (`cpuCount` / `memoryMb` variables; server builds keep 2 vCPU / 4096 MB).
+- The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
+- On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.
