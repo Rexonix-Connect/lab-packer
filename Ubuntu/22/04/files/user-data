@@ -23,6 +23,10 @@ autoinstall:
                 size: largest
     apt:
         geoip: false
+        # Hide the -security pocket from the installer so subiquity's
+        # unattended-upgrades pass finds nothing to install (subiquity has no
+        # 'updates: none'); a late-command re-enables it before apt-get update.
+        disable_suites: [security]
         primary:
             - arches: [i386, amd64]
               uri: "http://archive.ubuntu.com/ubuntu/"
@@ -51,6 +55,8 @@ autoinstall:
         - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
         - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
+        # Undo apt.disable_suites: curtin comments the pocket out as '# deb ...'
+        - sed -i 's/^# \(deb .*-security\)/\1/' /target/etc/apt/sources.list
         - curtin in-target --target=/target -- apt-get update
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
