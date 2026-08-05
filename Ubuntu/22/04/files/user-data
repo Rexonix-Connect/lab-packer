@@ -6,8 +6,7 @@ autoinstall:
         - sudo systemctl stop ssh
     locale: en_US
     keyboard:
-        layout: en
-        variant: us
+        layout: us
     timezone: Etc/UTC
     identity:
         hostname: ubuntu-server
