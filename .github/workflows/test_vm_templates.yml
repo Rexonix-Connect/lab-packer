@@ -1,0 +1,94 @@
+
+name: Test VM Templates
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep each test VM running before deletion
+        type: number
+        required: false
+        default: 10
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22-04-server
+            template_var: UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME
+          - name: ubuntu-22-04-desktop
+            template_var: UBUNTU_22_04_DESKTOP_X64_VM_TEMPLATE_NAME
+          - name: ubuntu-24-04-server
+            template_var: UBUNTU_24_04_SERVER_X64_VM_TEMPLATE_NAME
+          - name: ubuntu-24-04-desktop
+            template_var: UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME
+          - name: windows-server-2019
+            template_var: WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME
+          - name: windows-server-2022
+            template_var: WINDOWS_SERVER_2022_X64_VM_TEMPLATE_NAME
+    name: Test ${{ matrix.name }}
+    env:
+      GOVC_URL: ${{ secrets.VCENTER_HOST }}
+      GOVC_USERNAME: ${{ secrets.VCENTER_USER }}
+      GOVC_PASSWORD: ${{ secrets.VCENTER_PASS }}
+      GOVC_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      GOVC_DATACENTER: ${{ vars.VCENTER_DATACENTER_NAME }}
+      GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
+      GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
+      LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+      TEMPLATE_NAME: ${{ vars[matrix.template_var] }}
+      VM_NAME: testvm-${{ matrix.name }}-${{ github.run_id }}
+    steps:
+      - name: Install govc
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL https://github.com/vmware/govmomi/releases/download/v0.55.1/govc_Linux_x86_64.tar.gz | tar -xz -C "$HOME/.local/bin" govc
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/govc" version
+
+      - name: Deploy test VM from template
+        run: |
+          echo "Deploying '${TEMPLATE_NAME}' from library '${LIBRARY_NAME}' as '${VM_NAME}' ..."
+          govc library.deploy "/${LIBRARY_NAME}/${TEMPLATE_NAME}" "${VM_NAME}"
+
+      - name: Power on and verify the guest
+        run: |
+          govc vm.power -on "${VM_NAME}"
+          echo "Waiting up to ${{ inputs.ip_timeout }} for VMware Tools to report an IP address ..."
+          ip="$(govc vm.ip -wait '${{ inputs.ip_timeout }}' "${VM_NAME}")"
+          if [ -z "${ip}" ]; then
+            echo "Guest did not report an IP address within the timeout."
+            exit 1
+          fi
+          echo "Guest IP: ${ip}"
+          tools="$(govc object.collect -s "vm/${VM_NAME}" guest.toolsRunningStatus)"
+          echo "VMware Tools status: ${tools}"
+          [ "${tools}" = "guestToolsRunning" ]
+          echo "Guest hostname: $(govc object.collect -s "vm/${VM_NAME}" guest.hostName)"
+
+      - name: Keep the VM for inspection
+        run: |
+          echo "Keeping '${VM_NAME}' running for ${{ inputs.keep_minutes }} minutes ..."
+          sleep $(( ${{ inputs.keep_minutes }} * 60 ))
+
+      - name: Delete the test VM
+        if: always()
+        run: |
+          if govc vm.info "${VM_NAME}" 2>/dev/null | grep -q "${VM_NAME}"; then
+            govc vm.destroy "${VM_NAME}"
+            echo "Deleted '${VM_NAME}'."
+          else
+            echo "'${VM_NAME}' was not deployed; nothing to delete."
+          fi
