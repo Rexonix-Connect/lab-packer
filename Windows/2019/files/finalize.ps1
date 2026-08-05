@@ -1,13 +1,11 @@
-# Final template hardening script.
-# Uploaded by the file provisioner and executed by `shutdown_command` at the
-# very end of the Packer build, so the WinRM communicator remains available
-# until this point.
+# Final template cleanup script.
+# Uploaded by the file provisioner and executed by `shutdown_command`. Only
+# WinRM-session-safe steps run here; WinRM re-hardening, build-account
+# disabling and the actual power-off happen in finalize-deferred.ps1, which
+# this script launches as a detached SYSTEM scheduled task (changing WinRM
+# auth or the build account from inside the session would break the session
+# itself, since every WinRM request re-authenticates).
 $ErrorActionPreference = 'Stop'
-
-Write-Output '> Re-hardening WinRM ...'
-winrm set winrm/config/service '@{AllowUnencrypted="false"}'
-winrm set winrm/config/service/auth '@{Basic="false"}'
-Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'LocalAccountTokenFilterPolicy' -ErrorAction SilentlyContinue
 
 Write-Output '> Removing autologon credentials ...'
 $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
@@ -26,15 +24,19 @@ Write-Output '> Cleaning update cache, temporary files and event logs ...'
 $ErrorActionPreference = 'SilentlyContinue'
 Stop-Service -Name 'wuauserv' -Force
 Remove-Item -Recurse -Force 'C:\Windows\SoftwareDistribution\Download\*'
-Get-ChildItem -Path 'C:\Windows\Temp' -Exclude 'packer-finalize-template.ps1' | Remove-Item -Recurse -Force
+Get-ChildItem -Path 'C:\Windows\Temp' -Exclude 'packer-finalize-template.ps1', 'packer-finalize-deferred.ps1' | Remove-Item -Recurse -Force
 Remove-Item -Recurse -Force 'C:\Users\*\AppData\Local\Temp\*'
 wevtutil el | ForEach-Object { wevtutil cl $_ }
 $ErrorActionPreference = 'Stop'
 
-# Disabled rather than deleted: deleting the account that owns the live WinRM
-# session is unreliable, and clone customization manages accounts anyway.
-Write-Output '> Disabling the vagrant provisioning account ...'
-net user vagrant /active:no
+Write-Output '> Scheduling deferred hardening and shutdown ...'
+schtasks.exe /Create /TN 'packer-finalize-deferred' /SC ONCE /ST 00:00 /RU 'SYSTEM' /RL HIGHEST /F /TR 'powershell.exe -ExecutionPolicy Bypass -File C:\Windows\Temp\packer-finalize-deferred.ps1'
+if ($LASTEXITCODE -ne 0) {
+	throw 'Failed to create the deferred finalize task'
+}
+schtasks.exe /Run /TN 'packer-finalize-deferred'
+if ($LASTEXITCODE -ne 0) {
+	throw 'Failed to start the deferred finalize task'
+}
 
-Write-Output '> Shutting down ...'
-shutdown /s /t 10 /f /d p:4:1 /c "Packer template finalize"
+Write-Output '> Deferred finalize scheduled; the guest will power off shortly.'
