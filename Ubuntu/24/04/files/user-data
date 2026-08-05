@@ -59,7 +59,7 @@ autoinstall:
         - >-
           printf '\nTypes: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' >> /target/etc/apt/sources.list.d/ubuntu.sources
         - curtin in-target --target=/target -- apt-get update
-        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::Always-Include-Phased-Updates=true upgrade --yes
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
         - >-
           curtin in-target --target=/target -- bash -c '

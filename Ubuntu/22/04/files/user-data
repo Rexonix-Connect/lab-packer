@@ -57,7 +57,7 @@ autoinstall:
         # Undo apt.disable_suites: curtin comments the pocket out as '# deb ...'
         - sed -i 's/^# \(deb .*-security\)/\1/' /target/etc/apt/sources.list
         - curtin in-target --target=/target -- apt-get update
-        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::Always-Include-Phased-Updates=true upgrade --yes
         - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
         - >-
           curtin in-target --target=/target -- bash -c '
