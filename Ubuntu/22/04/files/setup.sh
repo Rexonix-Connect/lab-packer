@@ -11,13 +11,30 @@ fi
 if [ -f /var/log/lastlog ]; then
 cat /dev/null > /var/log/lastlog
 fi
-echo '> Verifying algif_aead mitigation ...'
-if ! modprobe -n -v algif_aead 2>/dev/null | grep -q '/bin/false'; then
-	echo '> algif_aead is not blocked by modprobe configuration'
-	exit 1
-fi
-if grep -qE '^algif_aead ' /proc/modules; then
-	echo '> algif_aead is loaded; refusing to template a potentially vulnerable image'
+echo '> Verifying known-CVE kernel module mitigations ...'
+for mod in algif_aead act_pedit esp4 esp6 rxrpc; do
+	if ! modprobe -n -v "${mod}" 2>/dev/null | grep -q '/bin/false'; then
+		echo "> ${mod} is not blocked by modprobe configuration"
+		exit 1
+	fi
+	if grep -qE "^${mod} " /proc/modules; then
+		echo "> ${mod} is loaded; refusing to template a potentially vulnerable image"
+		exit 1
+	fi
+done
+echo '> Verifying hardening sysctls ...'
+for kv in kernel.dmesg_restrict=1 kernel.kptr_restrict=1 kernel.yama.ptrace_scope=1 kernel.unprivileged_bpf_disabled=2 net.core.bpf_jit_harden=2 fs.protected_fifos=2 fs.protected_regular=2; do
+	key="${kv%%=*}"
+	want="${kv##*=}"
+	have="$(sysctl -n "${key}")"
+	if [ "${have}" != "${want}" ]; then
+		echo "> sysctl ${key} is ${have}, expected ${want}"
+		exit 1
+	fi
+done
+echo '> Verifying unattended-upgrades is enabled ...'
+if ! apt-config dump APT::Periodic::Unattended-Upgrade | grep -q '"1"'; then
+	echo '> unattended-upgrades periodic run is not enabled'
 	exit 1
 fi
 # Configures firewall defaults; SSH must be explicitly allowed before enabling.

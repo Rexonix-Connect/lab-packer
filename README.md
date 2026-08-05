@@ -54,23 +54,29 @@ VM template creation in vCenter with Hashicorp Packer using Self-hosted runners
 
 The Ubuntu 22.04 template build applies a small security baseline during autoinstall and final cleanup:
 
-- Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration.
+- Installs `unattended-upgrades` and `open-vm-tools` for ongoing security patching and vSphere guest integration, and explicitly enables periodic unattended security upgrades (`/etc/apt/apt.conf.d/20auto-upgrades`) so clones keep patching known vulnerabilities on their own.
+- Enforces minimum package versions that fix the known CVEs listed below (`kmod`, kernel) and fails the build otherwise.
 - Disables direct root SSH login in the generated template.
 - Disables SSH password authentication during final template cleanup.
 - Enables `ufw` with default-deny inbound and SSH explicitly allowed, so every clone starts with an active firewall.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
 
-##### CVE-2026-31431 Copy Fail mitigation
+##### Known-CVE kernel mitigations
 
-Ubuntu 22.04 Jammy is affected by CVE-2026-31431, also known as Copy Fail. The build requires `kmod` version `29-1ubuntu1.1` or newer and writes a modprobe rule that blocks the vulnerable `algif_aead` kernel module:
+The build mitigates the 2026 Linux kernel local privilege escalation family following the Ubuntu Security Team guidance for each advisory. Every module below is blocked via `install <module> /bin/false` plus `blacklist <module>` in `/etc/modprobe.d/manual-disable-<name>.conf`, the initramfs is regenerated so the blocks apply from early boot, and the build fails if any module is not blocked or is loaded at templating time:
 
-- `/etc/modprobe.d/manual-disable-algif_aead.conf`
-- `install algif_aead /bin/false`
-- `blacklist algif_aead`
+- `algif_aead` — CVE-2026-31431 "Copy Fail" (AF_ALG AEAD crypto interface); also requires `kmod` >= `29-1ubuntu1.1`, which ships Ubuntu's own mitigation.
+- `act_pedit` — CVE-2026-46331 "pedit COW" (tc-pedit traffic control action).
+- `esp4`, `esp6` — CVE-2026-46300 "Fragnesia", CVE-2026-43284 "Dirty Frag", CVE-2026-43503 "DirtyClone" (IPsec ESP).
+- `rxrpc` — CVE-2026-43500 "Dirty Frag", CVE-2026-43503 "DirtyClone" (RxRPC/AFS).
 
-The final cleanup script fails the build if `algif_aead` is not blocked or if it is loaded. This mitigation can affect workloads that require this kernel crypto module, so test crypto-heavy or container workloads before using the template broadly.
+Independently of the module blocks, the build asserts that the installed kernel is at least `5.15.0-181.191`, the version that fixes all of the above plus CVE-2026-46333 "ssh-keysign-pwn", so the CVEs stay fixed even on clones that re-enable a blocked module.
 
-To verify a built VM, check that `kmod` is at least `29-1ubuntu1.1`, `modprobe -n -v algif_aead` resolves to `/bin/false`, and `algif_aead` is absent from `/proc/modules`.
+Caveats: blocking `esp4`/`esp6` breaks in-guest IPsec (for example StrongSwan VPN labs), `rxrpc` breaks AFS, `act_pedit` breaks tc-pedit rules, and `algif_aead` can affect crypto-heavy workloads. To re-enable a module on a clone that needs it, delete the matching `/etc/modprobe.d/manual-disable-<name>.conf`, run `update-initramfs -u`, and reboot — the enforced kernel minimum keeps the underlying CVEs patched.
+
+The template also ships `/etc/sysctl.d/90-lab-hardening.conf` reducing common exploitation surface (`kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`). The cleanup script verifies the live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
+
+To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*` >= `5.15.0-181.191`, `modprobe -n -v <module>` resolves to `/bin/false` for each blocked module, none of them appear in `/proc/modules`, and `sysctl kernel.dmesg_restrict` reports `1`.
 
 ##### Vagrant provisioning account
 

@@ -72,6 +72,15 @@ variable "minimumKmodVersion" {
   default = "29-1ubuntu1.1"
 }
 
+# Oldest kernel that fixes the 2026 LPE family: CVE-2026-31431 "Copy Fail",
+# CVE-2026-46331 "pedit COW", CVE-2026-46300 "Fragnesia", CVE-2026-43284 and
+# CVE-2026-43500 "Dirty Frag", CVE-2026-43503 "DirtyClone", CVE-2026-46333
+# "ssh-keysign-pwn".
+variable "minimumKernelVersion" {
+  type    = string
+  default = "5.15.0-181.191"
+}
+
 variable "isoPath" {
   type = string
 }

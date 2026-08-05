@@ -64,5 +64,28 @@ autoinstall:
           curtin in-target --target=/target -- bash -c '
           version="$(dpkg-query -W -f="\$${Version}" kmod)";
           dpkg --compare-versions "$${version}" ge "${minimum_kmod_version}"'
+        # CVE-2026-31431 "Copy Fail": AF_ALG AEAD interface.
         - printf 'install algif_aead /bin/false\nblacklist algif_aead\n' > /target/etc/modprobe.d/manual-disable-algif_aead.conf
-        - curtin in-target --target=/target -- bash -c 'modprobe -n -v algif_aead | grep -q "/bin/false"'
+        # CVE-2026-46331 "pedit COW": tc-pedit traffic control action.
+        - printf 'install act_pedit /bin/false\nblacklist act_pedit\n' > /target/etc/modprobe.d/manual-disable-act_pedit.conf
+        # CVE-2026-46300 "Fragnesia", CVE-2026-43284 "Dirty Frag" and
+        # CVE-2026-43503 "DirtyClone": IPsec ESP. Remove this file (and rebuild
+        # the initramfs) on clones that must run IPsec/StrongSwan workloads.
+        - printf 'install esp4 /bin/false\nblacklist esp4\ninstall esp6 /bin/false\nblacklist esp6\n' > /target/etc/modprobe.d/manual-disable-esp.conf
+        # CVE-2026-43500 "Dirty Frag" and CVE-2026-43503 "DirtyClone": RxRPC/AFS.
+        - printf 'install rxrpc /bin/false\nblacklist rxrpc\n' > /target/etc/modprobe.d/manual-disable-rxrpc.conf
+        - >-
+          printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\n' > /target/etc/sysctl.d/90-lab-hardening.conf
+        # Keep clones patching known vulnerabilities on their own.
+        - printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /target/etc/apt/apt.conf.d/20auto-upgrades
+        # modprobe.d is bundled into the initramfs, so rebuild it after the blocks.
+        - curtin in-target --target=/target -- update-initramfs -u
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          for mod in algif_aead act_pedit esp4 esp6 rxrpc; do
+          modprobe -n -v "$${mod}" | grep -q "/bin/false" || exit 1;
+          done'
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}\n" "linux-image-[0-9]*" | sort -V | tail -n 1)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kernel_version}"'

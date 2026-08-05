@@ -12,8 +12,9 @@ source "vsphere-iso" "base" {
   cd_content = {
     "/meta-data" = file("./files/meta-data")
     "/user-data" = templatefile("./files/user-data", {
-      minimum_kmod_version = var.minimumKmodVersion
-      vm_password_hash     = var.vmPasswordHash
+      minimum_kmod_version   = var.minimumKmodVersion
+      minimum_kernel_version = var.minimumKernelVersion
+      vm_password_hash       = var.vmPasswordHash
     })
   }
   cd_label = "CIDATA"
