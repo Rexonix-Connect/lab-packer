@@ -107,6 +107,19 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 - Two additional sysctl baseline entries available on Noble's 6.8 kernel: `kernel.io_uring_disabled=2` (io_uring has been a recurring local privilege escalation source; re-enable on clones whose workloads need it) and `kernel.apparmor_restrict_unprivileged_userns=1` (asserts Noble's default AppArmor confinement of unprivileged user namespaces stays active).
 - Because Noble uses deb822 apt sources (`ubuntu.sources`), the installer-time security-pocket disable is undone by re-appending the `noble-security` stanza rather than un-commenting `sources.list` lines.
 
+### Test VM Templates
+
+[![Test VM Templates](../../actions/workflows/test_vm_templates.yml/badge.svg)](../../actions/workflows/test_vm_templates.yml)
+
+Smoke-tests all six VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
+
+The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all six `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the six matrix jobs execute one after another.
+
+#### Workflow inputs
+
+- `keep_minutes` - minutes to keep each test VM running before deletion; defaults to `10`
+- `ip_timeout` - how long to wait for VMware Tools to report an IP address, e.g. `15m`; defaults to `15m`
+
 ### Build Windows Server 2019 / 2022 VM Templates
 
 [![Build Windows Server 2019 VM Template](../../actions/workflows/build_windows_server_2019_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2019_vm_template.yml)
