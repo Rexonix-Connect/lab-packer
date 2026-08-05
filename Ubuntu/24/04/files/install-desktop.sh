@@ -10,7 +10,16 @@ if [ "${INSTALL_DESKTOP:-false}" != "true" ]; then
 	exit 0
 fi
 
-echo '> Installing the Ubuntu desktop task and GUI guest integration ...'
 export DEBIAN_FRONTEND=noninteractive
+# Phased updates are randomly held back per machine-id; a held phased library
+# can make desktop task dependencies unresolvable ("held broken packages"),
+# so include them all during the build.
+APT_OPTS=(-o APT::Get::Always-Include-Phased-Updates=true --yes)
+
 apt-get update
-apt-get install --yes ubuntu-desktop^ open-vm-tools-desktop
+
+echo '> Installing GUI guest integration ...'
+apt-get install "${APT_OPTS[@]}" open-vm-tools-desktop
+
+echo '> Installing the Ubuntu desktop task ...'
+apt-get install "${APT_OPTS[@]}" ubuntu-desktop^
