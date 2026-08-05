@@ -1,0 +1,67 @@
+
+name: Build Windows Server 2019 VM Template
+
+on:
+  workflow_dispatch:
+    inputs:
+      disk_size_gb:
+        description: VM template disk size in GB (minimum 60)
+        type: number
+        required: false
+        default: 90
+      winrm_timeout:
+        description: Packer WinRM wait timeout covering the unattended install (for example 2h or 3h)
+        type: string
+        required: false
+        default: 2h
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  packer:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
+    env:
+      PKR_VAR_vCenterServer: ${{ secrets.VCENTER_HOST }}
+      PKR_VAR_vCenterUsername: ${{ secrets.VCENTER_USER }}
+      PKR_VAR_vCenterPassword: ${{ secrets.VCENTER_PASS }}
+      PKR_VAR_vCenterInsecureConnection: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      PKR_VAR_vCenterDatacenterName: ${{ vars.VCENTER_DATACENTER_NAME }}
+      PKR_VAR_clusterName: ${{ vars.VCENTER_CLUSTER_NAME }}
+      PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
+      PKR_VAR_diskSizeGb: ${{ inputs.disk_size_gb }}
+      PKR_VAR_winrmTimeout: ${{ inputs.winrm_timeout }}
+      PKR_VAR_isoPath: ${{ vars.WINDOWS_SERVER_2019_X64_ISO_PATH }}
+      PKR_VAR_templateName: ${{ vars.WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+      PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
+      PKR_VAR_vmName: "windows2019server-temp"
+      PKR_VAR_vmFolder: "/"
+      PKR_VAR_vmUsername: "vagrant"
+      PKR_VAR_vmPassword: ${{ secrets.PACKER_VM_PASSWORD }}
+      PACKER_LOG: 1
+    steps:
+      - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Packer init
+        run: |
+          packer init ./shared/config.pkr.hcl
+
+      - name: Packer fmt
+        run: |
+          packer fmt -check ./shared/config.pkr.hcl
+          packer fmt -check ./Windows/2019
+
+      - name: Packer validate
+        run: |
+          cd Windows/2019
+          packer validate -only='vsphere-iso.base' .
+
+      - name: Packer build
+        run: |
+          cd Windows/2019
+          packer build -timestamp-ui -force -only='vsphere-iso.base' .

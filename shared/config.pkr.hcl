@@ -9,5 +9,9 @@ packer {
       version = "= 1.1.3"
       source  = "github.com/hashicorp/ansible"
     }
+    windows-update = {
+      version = "= 0.18.4"
+      source  = "github.com/rgl/windows-update"
+    }
   }
 }
