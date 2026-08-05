@@ -42,4 +42,9 @@ build {
     source      = "./files/finalize.ps1"
     destination = "C:/Windows/Temp/packer-finalize-template.ps1"
   }
+
+  provisioner "file" {
+    source      = "./files/finalize-deferred.ps1"
+    destination = "C:/Windows/Temp/packer-finalize-deferred.ps1"
+  }
 }
