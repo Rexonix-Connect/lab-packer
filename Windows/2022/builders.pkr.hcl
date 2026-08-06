@@ -70,6 +70,7 @@ build {
       "VCENTER_USERNAME=${var.vCenterUsername}",
       "VCENTER_PASSWORD=${var.vCenterPassword}",
       "VCENTER_INSECURE=${var.vCenterInsecureConnection}",
+      "VCENTER_DATACENTER=${var.vCenterDatacenterName}",
       "VM_NAME=${var.vmName}",
     ]
     command = "python3 ../../shared/scripts/set-vapp-descriptors.py"
