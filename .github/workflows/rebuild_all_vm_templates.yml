@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 # Rebuilds all six templates in sequence by calling the individual build
 # workflows; on a single self-hosted runner expect several hours end to end.
