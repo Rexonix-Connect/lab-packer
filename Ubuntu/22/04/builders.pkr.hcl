@@ -44,4 +44,16 @@ build {
     scripts           = ["./files/setup.sh"]
     expect_disconnect = true
   }
+  # The vapp block only sets ids and values; enrich the deploy form with
+  # categories, labels, descriptions and ordering before the export.
+  provisioner "shell-local" {
+    environment_vars = [
+      "VCENTER_SERVER=${var.vCenterServer}",
+      "VCENTER_USERNAME=${var.vCenterUsername}",
+      "VCENTER_PASSWORD=${var.vCenterPassword}",
+      "VCENTER_INSECURE=${var.vCenterInsecureConnection}",
+      "VM_NAME=${var.vmName}",
+    ]
+    command = "python3 ../../../shared/scripts/set-vapp-descriptors.py"
+  }
 }

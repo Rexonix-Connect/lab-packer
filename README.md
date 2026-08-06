@@ -185,7 +185,7 @@ Uses the same variables and secrets as the matching server template workflow (in
 
 ### vApp deploy form (vSphere)
 
-Every template's content library OVF item carries user-configurable OVF properties, so the vSphere "New VM from This Template" / "Deploy From Library" wizard shows a **Customize template** page. All fields default to empty, which means "leave as-is": DHCP/SLAAC networking and no personalization, identical to deploying before this feature existed.
+Every template's content library OVF item carries user-configurable OVF properties, so the vSphere "New VM from This Template" / "Deploy From Library" wizard shows a **Customize template** page with two sections, **Guest Identity** and **Guest Network**, with labeled and described fields in a fixed order (a `shell-local` build step rewrites the property descriptors via pyvmomi before export, since Packer's `vapp` block can only set ids and values — this requires `pyvmomi` in the Packer Docker image, so re-run "Build Custom Packer Docker Image" once before building templates with this change). All fields default to empty, which means "leave as-is": DHCP/SLAAC networking and no personalization, identical to deploying before this feature existed.
 
 | Property | Meaning |
 | --- | --- |
