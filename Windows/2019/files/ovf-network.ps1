@@ -1,8 +1,27 @@
 # Applies the network.* vApp properties from the OVF environment ISO
 # (Cloudbase-Init local script; runs once per instance-id). Empty properties
-# leave DHCP/router discovery untouched. Always exits 0 so a parse problem
-# never fails the Cloudbase-Init run.
+# leave DHCP/router discovery untouched. Every value is validated before any
+# adapter change, so a malformed property can never strand the clone without
+# networking, and the script always exits 0 so a parse problem never fails
+# the Cloudbase-Init run.
 $ErrorActionPreference = 'Stop'
+
+function Test-OvfIpAddress {
+	param([string]$Value, [System.Net.Sockets.AddressFamily]$Family)
+	$parsed = $null
+	if (-not [System.Net.IPAddress]::TryParse($Value, [ref]$parsed)) { return $false }
+	return $parsed.AddressFamily -eq $Family
+}
+
+function Test-OvfCidr {
+	param([string]$Value, [System.Net.Sockets.AddressFamily]$Family, [int]$MaxPrefix)
+	$parts = $Value -split '/', 2
+	if ($parts.Count -ne 2) { return $false }
+	$prefix = 0
+	if (-not [int]::TryParse($parts[1], [ref]$prefix)) { return $false }
+	if ($prefix -lt 0 -or $prefix -gt $MaxPrefix) { return $false }
+	return (Test-OvfIpAddress -Value $parts[0] -Family $Family)
+}
 
 try {
 	$xmlPath = $null
@@ -42,9 +61,28 @@ try {
 		exit 0
 	}
 
-	$adapter = Get-NetAdapter -Physical | Sort-Object -Property ifIndex | Select-Object -First 1
+	# Validation pass: reject everything before touching the adapter.
+	$v4 = [System.Net.Sockets.AddressFamily]::InterNetwork
+	$v6 = [System.Net.Sockets.AddressFamily]::InterNetworkV6
+	$invalid = @()
+	if ($ip4 -and -not (Test-OvfCidr -Value $ip4 -Family $v4 -MaxPrefix 32)) { $invalid += "network.ip4=$ip4" }
+	if ($gw4 -and -not (Test-OvfIpAddress -Value $gw4 -Family $v4)) { $invalid += "network.gw4=$gw4" }
+	if ($ip6 -and -not (Test-OvfCidr -Value $ip6 -Family $v6 -MaxPrefix 128)) { $invalid += "network.ip6=$ip6" }
+	if ($gw6 -and -not (Test-OvfIpAddress -Value $gw6 -Family $v6)) { $invalid += "network.gw6=$gw6" }
+	foreach ($server in $dns) {
+		$parsed = $null
+		if (-not [System.Net.IPAddress]::TryParse($server, [ref]$parsed)) { $invalid += "network.dns=$server" }
+	}
+	if ($invalid.Count -gt 0) {
+		Write-Output "ovf-network: ignoring invalid values, keeping current configuration: $($invalid -join '; ')"
+		exit 0
+	}
+
+	# Virtual NICs are not always reported as physical, so do not filter on
+	# -Physical; take the lowest ifIndex adapter.
+	$adapter = Get-NetAdapter | Sort-Object -Property ifIndex | Select-Object -First 1
 	if (-not $adapter) {
-		Write-Output 'ovf-network: no physical adapter found.'
+		Write-Output 'ovf-network: no network adapter found.'
 		exit 0
 	}
 	$ifIndex = $adapter.ifIndex
