@@ -122,6 +122,19 @@ The checks are deliberately credential-free (templates ship with the provisionin
 - `keep_minutes` - minutes to keep each test VM running before deletion; defaults to `10`
 - `ip_timeout` - how long to wait for VMware Tools to report an IP address, e.g. `15m`; defaults to `15m`
 
+### Rebuild All VM Templates
+
+[![Rebuild All VM Templates](../../actions/workflows/rebuild_all_vm_templates.yml/badge.svg)](../../actions/workflows/rebuild_all_vm_templates.yml)
+
+Rebuilds all six templates **in sequence** — Ubuntu 22.04 server, 22.04 desktop, 24.04 server, 24.04 desktop, Windows Server 2019, Windows Server 2022 — by calling the individual build workflows (which are also callable on their own via `workflow_call`), then optionally runs the Test VM Templates flow against the freshly built library items. Each build uses its own workflow's default inputs. On a single self-hosted runner expect several hours end to end.
+
+#### Workflow inputs
+
+- `continue_on_failure` - keep rebuilding the remaining templates when one build fails (the failed template's old library item stays in place); defaults to `false`, which stops the chain at the first failure
+- `run_tests` - run the Test VM Templates flow after the rebuilds; defaults to `true`
+
+The test flow additionally verifies on every deployed test VM that the vApp deploy form schema (all `hostname`/`username`/`network.*`/… properties) survived the OVF export/deploy chain, warning instead of failing for templates built before the deploy form existed.
+
 ### Build Windows Server 2019 / 2022 VM Templates
 
 [![Build Windows Server 2019 VM Template](../../actions/workflows/build_windows_server_2019_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2019_vm_template.yml)

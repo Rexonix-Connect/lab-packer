@@ -15,6 +15,20 @@ on:
         required: false
         default: 2h
 
+  # Callable from the Rebuild All VM Templates orchestrator.
+  workflow_call:
+    inputs:
+      disk_size_gb:
+        description: VM template disk size in GB (minimum 60)
+        type: number
+        required: false
+        default: 90
+      winrm_timeout:
+        description: Packer WinRM wait timeout covering the unattended install (for example 2h or 3h)
+        type: string
+        required: false
+        default: 2h
+
 permissions:
   contents: read
   packages: read
