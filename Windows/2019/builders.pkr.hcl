@@ -34,6 +34,21 @@ build {
     ]
   }
 
+  provisioner "file" {
+    source      = "./files/cloudbase-init.conf"
+    destination = "C:/Windows/Temp/cloudbase-init.conf"
+  }
+
+  provisioner "file" {
+    source      = "./files/ovf-network.ps1"
+    destination = "C:/Windows/Temp/ovf-network.ps1"
+  }
+
+  provisioner "powershell" {
+    environment_vars = ["CLOUDBASE_INIT_VERSION=${var.cloudbaseInitVersion}"]
+    scripts          = ["./files/install-cloudbase-init.ps1"]
+  }
+
   provisioner "powershell" {
     scripts = ["./files/setup.ps1"]
   }

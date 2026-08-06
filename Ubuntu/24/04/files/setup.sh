@@ -37,6 +37,14 @@ if ! apt-config dump APT::Periodic::Unattended-Upgrade | grep -q '"1"'; then
 	echo '> unattended-upgrades periodic run is not enabled'
 	exit 1
 fi
+echo '> Verifying recovery account and OVF network helper ...'
+id recovery >/dev/null
+if ! passwd -S recovery | grep -q ' P '; then
+	echo '> recovery account has no usable password'
+	exit 1
+fi
+[ -x /usr/local/sbin/ovf-settings.py ]
+systemctl is-enabled ovf-settings.service >/dev/null
 # Configures firewall defaults; SSH must be explicitly allowed before enabling.
 echo '> Configuring ufw firewall ...'
 ufw default deny incoming
@@ -73,7 +81,7 @@ ln -s /etc/machine-id /var/lib/dbus/machine-id
 echo '> Cleaning cloud-init'
 rm -rf /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg
 rm -rf /etc/cloud/cloud.cfg.d/99-installer.cfg
-echo 'datasource_list: [ VMware, NoCloud, ConfigDrive ]' | tee /etc/cloud/cloud.cfg.d/90_dpkg.cfg
+echo 'datasource_list: [ NoCloud, ConfigDrive, VMware, OVF, None ]' | tee /etc/cloud/cloud.cfg.d/90_dpkg.cfg
 /usr/bin/cloud-init clean --logs --seed
 # Marks the finalizer script (uploaded via `file` provisioner) executable so
 # `shutdown_command` can invoke it.

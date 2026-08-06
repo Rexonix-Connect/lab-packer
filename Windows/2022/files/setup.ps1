@@ -16,4 +16,17 @@ if ($pending.Count -gt 0) {
 	throw 'Software updates are still pending after the windows-update pass'
 }
 
+Write-Output '> Verifying Cloudbase-Init ...'
+$cbService = Get-Service -Name 'cloudbase-init'
+if ($cbService.StartType -ne 'Automatic') {
+	throw 'cloudbase-init service is not set to automatic start'
+}
+$cbBase = 'C:\Program Files\Cloudbase Solutions\Cloudbase-Init'
+if (-not (Select-String -Path "$cbBase\conf\cloudbase-init.conf" -Pattern 'OvfService' -Quiet)) {
+	throw 'cloudbase-init.conf does not contain the expected metadata services'
+}
+if (-not (Test-Path -Path "$cbBase\LocalScripts\ovf-network.ps1")) {
+	throw 'ovf-network.ps1 local script is missing'
+}
+
 Write-Output '> Verification finished.'

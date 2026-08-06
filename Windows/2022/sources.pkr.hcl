@@ -34,6 +34,26 @@ source "vsphere-iso" "base" {
     network_card = "vmxnet3"
   }
 
+  # Deploy-time form: userConfigurable OVF properties consumed by cloud-init
+  # (DataSourceOVF) / Cloudbase-Init (OvfService) at first boot. Empty values
+  # mean DHCP/SLAAC and no personalization. The plugin also enables the
+  # com.vmware.guestInfo and iso OVF-environment transports.
+  vapp {
+    properties = {
+      "hostname"       = ""
+      "username"       = ""
+      "public-keys"    = ""
+      "password"       = ""
+      "user-data"      = ""
+      "network.ip4"    = ""
+      "network.gw4"    = ""
+      "network.ip6"    = ""
+      "network.gw6"    = ""
+      "network.dns"    = ""
+      "network.domain" = ""
+    }
+  }
+
   # Export to content library
   content_library_destination {
     name    = "${var.templateName}"

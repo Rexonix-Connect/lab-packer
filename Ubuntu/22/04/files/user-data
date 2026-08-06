@@ -54,6 +54,21 @@ autoinstall:
         - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
         - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
         - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
+        # Console break-glass: password login works on the console only, since
+        # finalize disables SSH password authentication.
+        - >-
+          curtin in-target --target=/target -- useradd --create-home
+          --shell /bin/bash --groups sudo
+          --password '${recovery_password_hash}' recovery
+        # Deploy-time network personalization: parse OVF environment properties
+        # into netplan before networkd starts (see ovf-settings.py).
+        - mkdir -p /mnt/lab-cidata
+        - mount -o ro /dev/disk/by-label/CIDATA /mnt/lab-cidata || mount -o ro /dev/disk/by-label/cidata /mnt/lab-cidata
+        - cp /mnt/lab-cidata/ovf-settings.py /target/usr/local/sbin/ovf-settings.py
+        - cp /mnt/lab-cidata/ovf-settings.service /target/etc/systemd/system/ovf-settings.service
+        - umount /mnt/lab-cidata
+        - curtin in-target --target=/target -- chmod 755 /usr/local/sbin/ovf-settings.py
+        - curtin in-target --target=/target -- systemctl enable ovf-settings.service
         # Undo apt.disable_suites: curtin comments the pocket out as '# deb ...'
         - sed -i 's/^# \(deb .*-security\)/\1/' /target/etc/apt/sources.list
         - curtin in-target --target=/target -- apt-get update

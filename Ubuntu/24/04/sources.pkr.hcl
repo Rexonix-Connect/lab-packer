@@ -10,11 +10,14 @@ source "vsphere-iso" "base" {
   iso_paths    = ["${var.isoPath}"]
 
   cd_content = {
-    "/meta-data" = file("./files/meta-data")
+    "/meta-data"            = file("./files/meta-data")
+    "/ovf-settings.py"      = file("./files/ovf-settings.py")
+    "/ovf-settings.service" = file("./files/ovf-settings.service")
     "/user-data" = templatefile("./files/user-data", {
       minimum_kmod_version   = var.minimumKmodVersion
       minimum_kernel_version = var.minimumKernelVersion
       vm_password_hash       = var.vmPasswordHash
+      recovery_password_hash = var.recoveryPasswordHash
     })
   }
   cd_label = "CIDATA"
@@ -22,6 +25,26 @@ source "vsphere-iso" "base" {
   network_adapters {
     network      = "${var.portGroup}"
     network_card = "vmxnet3"
+  }
+
+  # Deploy-time form: userConfigurable OVF properties consumed by cloud-init
+  # (DataSourceOVF) / Cloudbase-Init (OvfService) at first boot. Empty values
+  # mean DHCP/SLAAC and no personalization. The plugin also enables the
+  # com.vmware.guestInfo and iso OVF-environment transports.
+  vapp {
+    properties = {
+      "hostname"       = ""
+      "username"       = ""
+      "public-keys"    = ""
+      "password"       = ""
+      "user-data"      = ""
+      "network.ip4"    = ""
+      "network.gw4"    = ""
+      "network.ip6"    = ""
+      "network.gw6"    = ""
+      "network.dns"    = ""
+      "network.domain" = ""
+    }
   }
 
   # Export to content library

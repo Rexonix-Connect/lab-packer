@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply OVF environment deploy settings (network, username)
+ConditionVirtualization=vmware
+ConditionPathExists=/usr/local/sbin/ovf-settings.py
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=systemd-networkd.service network-pre.target cloud-init-local.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/local/sbin/ovf-settings.py
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target
