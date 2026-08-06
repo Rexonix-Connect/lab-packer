@@ -15,6 +15,20 @@ on:
         required: false
         default: 45m
 
+  # Callable from the Rebuild All VM Templates orchestrator.
+  workflow_call:
+    inputs:
+      disk_size_gb:
+        description: VM template disk size in GB (minimum 25)
+        type: number
+        required: false
+        default: 60
+      ssh_timeout:
+        description: Packer SSH wait timeout (for example 45m or 1h)
+        type: string
+        required: false
+        default: 45m
+
 permissions:
   contents: read
   packages: read

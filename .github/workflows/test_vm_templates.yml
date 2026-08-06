@@ -15,6 +15,20 @@ on:
         required: false
         default: 15m
 
+  # Callable from the Rebuild All VM Templates orchestrator.
+  workflow_call:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep each test VM running before deletion
+        type: number
+        required: false
+        default: 10
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+
 permissions:
   contents: read
 
@@ -77,6 +91,27 @@ jobs:
           echo "VMware Tools status: ${tools}"
           [ "${tools}" = "guestToolsRunning" ]
           echo "Guest hostname: $(govc object.collect -s "vm/${VM_NAME}" guest.hostName)"
+
+      - name: Verify the vApp deploy form schema
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          if [ -z "${props}" ]; then
+            echo "::warning::${TEMPLATE_NAME} has no vApp configuration (template predates the deploy form); skipping schema check."
+            exit 0
+          fi
+          echo "vApp properties on the deployed VM:"
+          echo "${props}"
+          for key in hostname username public-keys password user-data network.ip4 network.gw4 network.ip6 network.gw6 network.dns network.domain; do
+            if ! echo "${props}" | grep -qx "${key}"; then
+              echo "Missing vApp property: ${key}"
+              exit 1
+            fi
+          done
+          echo "All deploy form properties survived the export/deploy chain."
 
       - name: Keep the VM for inspection
         run: |
