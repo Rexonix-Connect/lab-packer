@@ -79,3 +79,17 @@ jobs:
         run: |
           cd Windows/2019
           packer build -timestamp-ui -force -only='vsphere-iso.base' .
+
+      # The vCenter OVF export scrambles vApp property order and the deploy
+      # wizard renders document order, so rewrite the exported descriptor
+      # into the canonical form order.
+      - name: Normalize deploy form in the library item
+        env:
+          VCENTER_SERVER: ${{ secrets.VCENTER_HOST }}
+          VCENTER_USERNAME: ${{ secrets.VCENTER_USER }}
+          VCENTER_PASSWORD: ${{ secrets.VCENTER_PASS }}
+          VCENTER_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+          LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          TEMPLATE_NAME: ${{ vars.WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME }}
+        run: |
+          python3 shared/scripts/normalize-library-ovf.py
