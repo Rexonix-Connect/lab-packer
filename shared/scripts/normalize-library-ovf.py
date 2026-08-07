@@ -143,13 +143,23 @@ def update_manifest(mf_text, ovf_name, ovf_bytes):
     return "\n".join(lines) + "\n"
 
 
+class InsecureSession(requests.Session):
+    # Request-level verify=False, because a REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE
+    # environment override silently wins over the session-level flag and
+    # would re-enable verification.
+    def request(self, *args, **kwargs):
+        kwargs["verify"] = False
+        return super().request(*args, **kwargs)
+
+
 class LibraryClient:
     def __init__(self, host, username, password, insecure):
         self.base = "https://%s" % host
-        self.session = requests.Session()
-        self.session.verify = not insecure
         if insecure:
+            self.session = InsecureSession()
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        else:
+            self.session = requests.Session()
         response = self.session.post(self.base + "/api/session",
                                      auth=(username, password),
                                      timeout=HTTP_TIMEOUT)
@@ -182,22 +192,33 @@ class LibraryClient:
                      % (item_name, library_name))
         return items[0]
 
+    def _list_session_files(self, sid):
+        response = self.session.get(
+            self.base + "/api/content/library/item/download-session/%s/file"
+            % sid, timeout=HTTP_TIMEOUT)
+        self._check(response, "list session files")
+        return response.json()
+
     def _prepared_file(self, sid, name):
         info = self._post(
             "/api/content/library/item/download-session/%s/file" % sid,
             "prepare %s" % name, {"file_name": name}, {"action": "prepare"})
         deadline = time.monotonic() + 300
         while info.get("status") != "PREPARED":
+            if info.get("status") == "ERROR":
+                sys.exit("normalize-library-ovf: preparing %s failed: %s"
+                         % (name, info.get("error_message")))
             if time.monotonic() > deadline:
                 sys.exit("normalize-library-ovf: timed out preparing %s"
                          % name)
             time.sleep(2)
-            response = self.session.get(
-                self.base
-                + "/api/content/library/item/download-session/%s/file/%s"
-                % (sid, name), timeout=HTTP_TIMEOUT)
-            self._check(response, "poll %s" % name)
-            info = response.json()
+            # Poll through the file list; a per-file get is not routable on
+            # every vCenter (observed HTTP 404), the list always is.
+            info = next((f for f in self._list_session_files(sid)
+                         if f.get("name") == name), None)
+            if info is None:
+                sys.exit("normalize-library-ovf: %s disappeared from the"
+                         " download session" % name)
         return info
 
     def download_files(self, item_id, suffixes):
@@ -205,12 +226,8 @@ class LibraryClient:
                          "create download session",
                          {"library_item_id": item_id})
         try:
-            response = self.session.get(
-                self.base + "/api/content/library/item/download-session/%s/file"
-                % sid, timeout=HTTP_TIMEOUT)
-            self._check(response, "list session files")
             wanted = {}
-            for info in response.json():
+            for info in self._list_session_files(sid):
                 name = info["name"]
                 if not name.lower().endswith(suffixes):
                     continue
@@ -225,27 +242,48 @@ class LibraryClient:
                 self.base + "/api/content/library/item/download-session/%s"
                 % sid, timeout=HTTP_TIMEOUT)
 
+    def _register_upload_file(self, sid, name, size):
+        path = "/api/content/library/item/update-session/%s/file" % sid
+        spec = {"name": name, "source_type": "PUSH", "size": size}
+        # vCenter builds differ in how the file-add operation is routed:
+        # as a plain POST on the session's file collection or as ?action=add
+        # (the shape download prepare uses). Try plain first, fall back once.
+        response = self.session.post(self.base + path, json=spec,
+                                     timeout=HTTP_TIMEOUT)
+        if response.status_code >= 400:
+            fallback = self.session.post(self.base + path, json=spec,
+                                         params={"action": "add"},
+                                         timeout=HTTP_TIMEOUT)
+            if fallback.status_code >= 400:
+                sys.exit("normalize-library-ovf: register %s failed with"
+                         " HTTP %d (plain): %s; HTTP %d (action=add): %s"
+                         % (name, response.status_code, response.text[:500],
+                            fallback.status_code, fallback.text[:500]))
+            response = fallback
+        return response.json()
+
     def upload_files(self, item_id, files):
         sid = self._post("/api/content/library/item/update-session",
                          "create update session",
                          {"library_item_id": item_id})
         try:
             for name, data in files.items():
-                info = self._post(
-                    "/api/content/library/item/update-session/%s/file" % sid,
-                    "register %s" % name,
-                    {"name": name, "source_type": "PUSH", "size": len(data)})
+                info = self._register_upload_file(sid, name, len(data))
                 response = self.session.put(
                     info["upload_endpoint"]["uri"], data=data,
                     timeout=HTTP_TIMEOUT)
                 self._check(response, "upload %s" % name)
             self._post("/api/content/library/item/update-session/%s" % sid,
                        "complete update session", params={"action": "complete"})
-        except SystemExit:
-            self.session.post(
-                self.base + "/api/content/library/item/update-session/%s" % sid,
-                params={"action": "fail"}, timeout=HTTP_TIMEOUT)
-            raise
+        except BaseException:
+            try:
+                self.session.post(
+                    self.base + "/api/content/library/item/update-session/%s" % sid,
+                    json={"client_error_message":
+                          "normalize-library-ovf failed; see the workflow log"},
+                    params={"action": "fail"}, timeout=HTTP_TIMEOUT)
+            finally:
+                raise
 
 
 def main():
