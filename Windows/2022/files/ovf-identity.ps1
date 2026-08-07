@@ -59,7 +59,11 @@ try {
 	}
 
 	# Default target: the built-in Administrator (RID 500), whatever its name.
-	$target = (Get-LocalUser | Where-Object { $_.SID.Value -like '*-500' } | Select-Object -First 1).Name
+	$builtin = Get-LocalUser | Where-Object { $_.SID.Value -like '*-500' } | Select-Object -First 1
+	$target = if ($builtin) { $builtin.Name } else { $null }
+	if (-not $target) {
+		Write-Output 'ovf-identity: built-in Administrator (RID 500) not found; only an explicit username can be targeted'
+	}
 
 	if ($username -and $username.ToLower() -ne 'administrator') {
 		if ($username -notmatch '^[A-Za-z][A-Za-z0-9._-]{0,19}$' -or $reservedUsernames -contains $username.ToLower()) {
@@ -84,8 +88,12 @@ try {
 	}
 
 	if ($password) {
-		Set-LocalUser -Name $target -Password (ConvertTo-SecureString $password -AsPlainText -Force)
-		Write-Output "ovf-identity: password set for '$target'"
+		if ($target) {
+			Set-LocalUser -Name $target -Password (ConvertTo-SecureString $password -AsPlainText -Force)
+			Write-Output "ovf-identity: password set for '$target'"
+		} else {
+			Write-Output 'ovf-identity: no target account available; password not applied'
+		}
 	}
 
 	if ($keys.Count -gt 0) {

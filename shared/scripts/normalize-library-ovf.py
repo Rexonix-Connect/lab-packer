@@ -29,6 +29,9 @@ _spec.loader.exec_module(_descriptors_module)
 DESCRIPTORS = _descriptors_module.DESCRIPTORS
 
 OVF_NS = "http://schemas.dmtf.org/ovf/envelope/1"
+# Connect/read timeout for every vCenter request, so a stalled connection
+# fails the workflow step instead of hanging it.
+HTTP_TIMEOUT = 300
 
 
 def env(name):
@@ -148,7 +151,8 @@ class LibraryClient:
         if insecure:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         response = self.session.post(self.base + "/api/session",
-                                     auth=(username, password))
+                                     auth=(username, password),
+                                     timeout=HTTP_TIMEOUT)
         self._check(response, "login")
         self.session.headers["vmware-api-session-id"] = response.json()
 
@@ -160,7 +164,7 @@ class LibraryClient:
 
     def _post(self, path, action, payload=None, params=None):
         response = self.session.post(self.base + path, json=payload,
-                                     params=params)
+                                     params=params, timeout=HTTP_TIMEOUT)
         self._check(response, action)
         return response.json() if response.text else None
 
@@ -191,7 +195,7 @@ class LibraryClient:
             response = self.session.get(
                 self.base
                 + "/api/content/library/item/download-session/%s/file/%s"
-                % (sid, name))
+                % (sid, name), timeout=HTTP_TIMEOUT)
             self._check(response, "poll %s" % name)
             info = response.json()
         return info
@@ -203,7 +207,7 @@ class LibraryClient:
         try:
             response = self.session.get(
                 self.base + "/api/content/library/item/download-session/%s/file"
-                % sid)
+                % sid, timeout=HTTP_TIMEOUT)
             self._check(response, "list session files")
             wanted = {}
             for info in response.json():
@@ -212,14 +216,14 @@ class LibraryClient:
                     continue
                 prepared = self._prepared_file(sid, name)
                 uri = prepared["download_endpoint"]["uri"]
-                content = self.session.get(uri)
+                content = self.session.get(uri, timeout=HTTP_TIMEOUT)
                 self._check(content, "download %s" % name)
                 wanted[name] = content.content
             return wanted
         finally:
             self.session.delete(
                 self.base + "/api/content/library/item/download-session/%s"
-                % sid)
+                % sid, timeout=HTTP_TIMEOUT)
 
     def upload_files(self, item_id, files):
         sid = self._post("/api/content/library/item/update-session",
@@ -232,14 +236,15 @@ class LibraryClient:
                     "register %s" % name,
                     {"name": name, "source_type": "PUSH", "size": len(data)})
                 response = self.session.put(
-                    info["upload_endpoint"]["uri"], data=data)
+                    info["upload_endpoint"]["uri"], data=data,
+                    timeout=HTTP_TIMEOUT)
                 self._check(response, "upload %s" % name)
             self._post("/api/content/library/item/update-session/%s" % sid,
                        "complete update session", params={"action": "complete"})
         except SystemExit:
             self.session.post(
                 self.base + "/api/content/library/item/update-session/%s" % sid,
-                params={"action": "fail"})
+                params={"action": "fail"}, timeout=HTTP_TIMEOUT)
             raise
 
 
