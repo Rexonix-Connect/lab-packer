@@ -3,10 +3,13 @@
 
 network.* properties become a netplan override; the username property becomes
 a cloud-init default_user override, so the form's password/public-keys apply
-to the chosen account. Runs before systemd-networkd and cloud-init on every
-boot (see ovf-settings.service); network settings re-apply on reboot, while
-the username only matters on the first boot of a deployment. Fails open: any
-error leaves the existing configuration untouched.
+to the chosen account; public-keys is split on commas and newlines into a
+ssh_authorized_keys override (the deploy wizard's single-line field makes
+commas the only reliable separator for multiple keys). Runs before
+systemd-networkd and cloud-init on every boot (see ovf-settings.service);
+network settings re-apply on reboot, while the user settings only matter on
+the first boot of a deployment. Fails open: any error leaves the existing
+configuration untouched.
 """
 import ipaddress
 import os
@@ -22,6 +25,10 @@ NET_KEYS = ("network.ip4", "network.gw4", "network.ip6", "network.gw6",
             "network.dns", "network.domain")
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 RESERVED_USERNAMES = {"root", "vagrant", "recovery", "administrator"}
+# Keys are separated by newlines or by commas; a comma only splits where the
+# next token starts a key type (ssh-*, ecdsa-*, sk-*), so commas inside an
+# options prefix such as from="a,b" do not break a key apart.
+SSH_KEY_SPLIT_RE = re.compile(r",\s*(?=(?:ssh|ecdsa|sk)-)")
 
 
 def get_ovf_env():
@@ -119,21 +126,43 @@ def build_netplan(props, ifname):
     return "\n".join(lines) + "\n"
 
 
-def build_user_cfg(username):
+def split_public_keys(value):
+    keys = []
+    for line in value.splitlines():
+        for part in SSH_KEY_SPLIT_RE.split(line):
+            part = part.strip(" \t,")
+            if part:
+                keys.append(part)
+    return keys
+
+
+def yaml_quote(value):
+    return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_user_cfg(username, keys):
     # Complete default_user spec (Ubuntu server defaults) rather than relying
     # on cloud-init's fragment merge depth; the form's password/public-keys
-    # target the default user, so they follow the rename automatically.
-    return "\n".join([
-        "# Written by ovf-settings.service from OVF environment properties.",
-        "system_info:",
-        "  default_user:",
-        "    name: %s" % username,
-        "    gecos: %s" % username,
-        "    groups: [adm, cdrom, dip, lxd, plugdev, sudo]",
-        "    lock_passwd: true",
-        "    shell: /bin/bash",
-        "    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]",
-    ]) + "\n"
+    # target the default user, so they follow the rename automatically. The
+    # top-level ssh_authorized_keys also applies to the default user, and
+    # covers comma-separated keys that the OVF datasource would treat as one.
+    lines = ["# Written by ovf-settings.service from OVF environment"
+             " properties."]
+    if username:
+        lines.extend([
+            "system_info:",
+            "  default_user:",
+            "    name: %s" % username,
+            "    gecos: %s" % username,
+            "    groups: [adm, cdrom, dip, lxd, plugdev, sudo]",
+            "    lock_passwd: true",
+            "    shell: /bin/bash",
+            "    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]",
+        ])
+    if keys:
+        lines.append("ssh_authorized_keys:")
+        lines.extend("  - %s" % yaml_quote(key) for key in keys)
+    return "\n".join(lines) + "\n"
 
 
 def write_if_changed(path, content, run_after=None):
@@ -158,13 +187,15 @@ def remove_if_present(path, run_after=None):
 
 def apply_user(props):
     username = props.get("username", "")
-    if not username:
-        return remove_if_present(USER_CFG)
-    if not USERNAME_RE.match(username) or username.lower() in RESERVED_USERNAMES:
+    if username and (not USERNAME_RE.match(username)
+                     or username.lower() in RESERVED_USERNAMES):
         print("ovf-settings: ignoring invalid or reserved username %r"
               % username, file=sys.stderr)
+        username = ""
+    keys = split_public_keys(props.get("public-keys", ""))
+    if not username and not keys:
         return remove_if_present(USER_CFG)
-    write_if_changed(USER_CFG, build_user_cfg(username))
+    write_if_changed(USER_CFG, build_user_cfg(username, keys))
 
 
 def apply_network(props):

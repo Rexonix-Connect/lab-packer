@@ -1,5 +1,6 @@
 # Installs Cloudbase-Init (pinned version from CLOUDBASE_INIT_VERSION) and
-# applies the repository configuration and the OVF network local script.
+# applies the repository configuration and the OVF identity/network local
+# scripts.
 # The service first runs on the next boot, which is the first boot of a
 # deployed clone - the build itself never reboots after this step.
 $ErrorActionPreference = 'Stop'
@@ -30,8 +31,9 @@ Copy-Item -Force 'C:\Windows\Temp\cloudbase-init.conf' "$base\conf\cloudbase-ini
 # configuration there to keep the file consistent rather than misleading.
 Copy-Item -Force 'C:\Windows\Temp\cloudbase-init.conf' "$base\conf\cloudbase-init-unattend.conf"
 New-Item -ItemType Directory -Force -Path "$base\LocalScripts" | Out-Null
+Copy-Item -Force 'C:\Windows\Temp\ovf-identity.ps1' "$base\LocalScripts\ovf-identity.ps1"
 Copy-Item -Force 'C:\Windows\Temp\ovf-network.ps1' "$base\LocalScripts\ovf-network.ps1"
-Remove-Item -Force 'C:\Windows\Temp\cloudbase-init.conf', 'C:\Windows\Temp\ovf-network.ps1'
+Remove-Item -Force 'C:\Windows\Temp\cloudbase-init.conf', 'C:\Windows\Temp\ovf-identity.ps1', 'C:\Windows\Temp\ovf-network.ps1'
 
 $service = Get-Service -Name 'cloudbase-init'
 if ($service.StartType -ne 'Automatic') {

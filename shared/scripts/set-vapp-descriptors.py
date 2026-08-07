@@ -23,9 +23,13 @@ class Descriptor(NamedTuple):
     category: str
     label: str
     description: str
+    type: str = "string"
 
 
-# In the order the deploy wizard shows.
+# In the order the deploy wizard shows: identity, network (IPv4 pair, IPv6
+# pair, then DNS), and the advanced escape hatch last. The library OVF is
+# normalized to this order by normalize-library-ovf.py after export, because
+# the vCenter export scrambles property order.
 DESCRIPTORS = [
     Descriptor("hostname", "Guest Identity", "Hostname",
                "Guest hostname; empty keeps the template default"),
@@ -34,12 +38,11 @@ DESCRIPTORS = [
                " Windows local Administrators member); empty means"
                " ubuntu / Administrator"),
     Descriptor("password", "Guest Identity", "Password",
-               "Password for the managed admin account"),
+               "Password for the managed admin account; empty keeps the"
+               " account's existing password", type="password"),
     Descriptor("public-keys", "Guest Identity", "SSH Public Keys",
-               "SSH public keys authorized for the managed admin account"),
-    Descriptor("user-data", "Guest Identity", "User Data (base64)",
-               "base64-encoded cloud-config (Linux) or Cloudbase-Init"
-               " userdata (Windows) for anything beyond the basic fields"),
+               "SSH public key(s) authorized for the managed admin account;"
+               " separate multiple keys with commas or new lines"),
     Descriptor("network.ip4", "Guest Network", "IPv4 Address (CIDR)",
                "Static IPv4 address, e.g. 192.168.10.5/24; empty means DHCP"),
     Descriptor("network.gw4", "Guest Network", "IPv4 Gateway",
@@ -54,6 +57,10 @@ DESCRIPTORS = [
                " freely"),
     Descriptor("network.domain", "Guest Network", "DNS Search Domains",
                "DNS search domain(s), space or comma separated"),
+    Descriptor("user-data", "Advanced", "User Data (base64)",
+               "Advanced usage: base64-encoded cloud-config (Linux) or"
+               " Cloudbase-Init userdata (Windows), applied in addition to"
+               " the fields above"),
 ]
 
 
@@ -107,7 +114,7 @@ def build_property_specs(existing):
                 category=descriptor.category,
                 label=descriptor.label,
                 description=descriptor.description,
-                type="string",
+                type=descriptor.type,
                 userConfigurable=True,
                 value=existing[descriptor.id].value or "",
             )))
