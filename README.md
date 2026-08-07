@@ -198,23 +198,23 @@ Uses the same variables and secrets as the matching server template workflow (in
 
 ### vApp deploy form (vSphere)
 
-Every template's content library OVF item carries user-configurable OVF properties, so the vSphere "New VM from This Template" / "Deploy From Library" wizard shows a **Customize template** page with two sections, **Guest Identity** and **Guest Network**, with labeled and described fields in a fixed order (a `shell-local` build step rewrites the property descriptors via pyvmomi before export, since Packer's `vapp` block can only set ids and values — this requires `pyvmomi` in the Packer Docker image, so re-run "Build Custom Packer Docker Image" once before building templates with this change). All fields default to empty, which means "leave as-is": DHCP/SLAAC networking and no personalization, identical to deploying before this feature existed.
+Every template's content library OVF item carries user-configurable OVF properties, so the vSphere "New VM from This Template" / "Deploy From Library" wizard shows a **Customize template** page with three sections in a fixed, logical order — **Guest Identity** (hostname, username, password, SSH keys), **Guest Network** (IPv4 pair, IPv6 pair, then DNS) and **Advanced** (user-data last) — with labeled and described fields, and the password input masked. Two build steps make this deterministic: a `shell-local` provisioner rewrites the property descriptors via pyvmomi before export (Packer's `vapp` block can only set ids and values; this requires `pyvmomi` in the Packer Docker image, so re-run "Build Custom Packer Docker Image" once before building templates with this change), and a post-build workflow step (`shared/scripts/normalize-library-ovf.py`) reorders the exported library OVF, because the vCenter export writes vApp properties in arbitrary order and the wizard renders document order. All fields default to empty, which means "leave as-is": DHCP/SLAAC networking and no personalization, identical to deploying before this feature existed.
 
 | Property | Meaning |
 | --- | --- |
 | `hostname` | Guest hostname (Linux: cloud-init; Windows: Cloudbase-Init computer rename, reboots once) |
-| `username` | Managed admin account: Linux renames the first-boot default user (default `ubuntu`), Windows creates it and adds it to `Administrators` (default `Administrator`); `password`/`public-keys` apply to this account; first boot only; reserved names (`root`, `vagrant`, `recovery`, `Administrator`) are ignored |
-| `public-keys` | SSH public key(s) authorized for the default user (Linux) / Administrator (Windows) |
-| `password` | Account password: Linux default-user password (cloud-init), Windows Administrator password |
-| `user-data` | **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the basic fields |
+| `username` | Managed admin account: Linux renames the first-boot default user (default `ubuntu`); Windows creates it and adds it to `Administrators` — only when a password or SSH keys are also provided (default: the built-in `Administrator`); `password`/`public-keys` apply to this account; first boot only; reserved names (`root`, `vagrant`, `recovery`, `Administrator`) are ignored |
+| `password` | Password for the managed account (masked in the wizard); empty never touches existing passwords |
+| `public-keys` | SSH public key(s) for the managed account; **separate multiple keys with commas or new lines** (the wizard's field is single-line and strips pasted newlines, so commas are the reliable separator there; commas inside an options prefix like `from="a,b"` are handled) |
 | `network.ip4` | Static IPv4 address in CIDR form, e.g. `192.168.10.5/24`; empty = DHCP |
 | `network.gw4` | IPv4 default gateway |
 | `network.ip6` | Static IPv6 address in CIDR form, e.g. `2001:db8:1::5/64`; empty = SLAAC/router advertisements |
 | `network.gw6` | IPv6 default gateway |
 | `network.dns` | DNS servers, space or comma separated, IPv4 and IPv6 mixed freely |
 | `network.domain` | DNS search domain(s) |
+| `user-data` | Advanced usage: **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the fields above |
 
-Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*` and `username` fields are applied by `/usr/local/sbin/ovf-settings.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO, and `ovf-network.ps1` (a Cloudbase-Init local script, run once per deployment) applies the `network.*` fields.
+Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*`, `username` and `public-keys` fields are applied by `/usr/local/sbin/ovf-settings.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` plus a cloud-init user/keys override and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO for hostname and user-data, while two local scripts (run once per deployment) apply the rest: `ovf-identity.ps1` handles username/password/public-keys deterministically — an empty password field never changes any password, keys land in `C:\ProgramData\ssh\administrators_authorized_keys` (correctly ACLed; OpenSSH Server is not preinstalled, the file takes effect once you enable it) — and `ovf-network.ps1` applies the `network.*` fields. The stock Cloudbase-Init user plugins are deliberately not used: they set a *random* password whenever the metadata carries none, which would silently break the Administrator break-glass on every form deployment.
 
 Precedence: explicitly injected `guestinfo.metadata`/`guestinfo.userdata` (e.g. from Terraform) outranks the form on Linux; vCenter guest customization specs continue to work unchanged on both OS families and are the right tool for bulk cloning.
 
@@ -225,6 +225,6 @@ The same first-boot machinery works outside vSphere because the datasource lists
 ### Console recovery (break-glass)
 
 - **Ubuntu**: log in on the hypervisor console as `recovery` with the `RECOVERY_PASSWORD` secret value (sudo-capable). SSH password authentication is disabled in the templates, so this password is useless over the network by design.
-- **Windows**: log in on the console as `Administrator` with the `PACKER_VM_PASSWORD` secret value (or the value set via the form's `password` field at deploy time).
+- **Windows**: log in on the console as `Administrator` with the `PACKER_VM_PASSWORD` secret value (or the value set via the form's `password` field at deploy time; leaving the field empty keeps the secret's value).
 
 First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log` (Linux), `C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\cloudbase-init.log` (Windows), and `journalctl -u ovf-settings` for the network helper.
