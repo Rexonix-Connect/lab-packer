@@ -135,6 +135,12 @@ Rebuilds all six templates **in sequence** — Ubuntu 22.04 server, 22.04 deskto
 
 The test flow additionally verifies on every deployed test VM that the vApp deploy form schema (all `hostname`/`username`/`network.*`/… properties) survived the OVF export/deploy chain, warning instead of failing for templates built before the deploy form existed.
 
+### Normalize Deploy Form
+
+[![Normalize Deploy Form](../../actions/workflows/normalize_deploy_form.yml/badge.svg)](../../actions/workflows/normalize_deploy_form.yml)
+
+Reruns the post-build deploy-form normalization (`shared/scripts/normalize-library-ovf.py`, see "vApp deploy form") on an existing content library item, given its `template_name` — useful for templates exported while the normalize step was broken or before it existed, without spending a rebuild. Signed library items (`.cert` present) are refused.
+
 ### Build Windows Server 2019 / 2022 VM Templates
 
 [![Build Windows Server 2019 VM Template](../../actions/workflows/build_windows_server_2019_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2019_vm_template.yml)
