@@ -40,6 +40,11 @@ build {
   }
 
   provisioner "file" {
+    source      = "./files/ovf-identity.ps1"
+    destination = "C:/Windows/Temp/ovf-identity.ps1"
+  }
+
+  provisioner "file" {
     source      = "./files/ovf-network.ps1"
     destination = "C:/Windows/Temp/ovf-network.ps1"
   }
