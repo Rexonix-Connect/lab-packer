@@ -256,8 +256,8 @@ class LibraryClient:
                                          timeout=HTTP_TIMEOUT)
             if fallback.status_code >= 400:
                 sys.exit("normalize-library-ovf: register %s failed with"
-                         " HTTP %d (plain) and HTTP %d (action=add): %s"
-                         % (name, response.status_code,
+                         " HTTP %d (plain): %s; HTTP %d (action=add): %s"
+                         % (name, response.status_code, response.text[:500],
                             fallback.status_code, fallback.text[:500]))
             response = fallback
         return response.json()
@@ -275,13 +275,15 @@ class LibraryClient:
                 self._check(response, "upload %s" % name)
             self._post("/api/content/library/item/update-session/%s" % sid,
                        "complete update session", params={"action": "complete"})
-        except SystemExit:
-            self.session.post(
-                self.base + "/api/content/library/item/update-session/%s" % sid,
-                json={"client_error_message":
-                      "normalize-library-ovf failed; see the workflow log"},
-                params={"action": "fail"}, timeout=HTTP_TIMEOUT)
-            raise
+        except BaseException:
+            try:
+                self.session.post(
+                    self.base + "/api/content/library/item/update-session/%s" % sid,
+                    json={"client_error_message":
+                          "normalize-library-ovf failed; see the workflow log"},
+                    params={"action": "fail"}, timeout=HTTP_TIMEOUT)
+            finally:
+                raise
 
 
 def main():
