@@ -48,6 +48,8 @@ jobs:
             template_var: UBUNTU_24_04_SERVER_X64_VM_TEMPLATE_NAME
           - name: ubuntu-24-04-desktop
             template_var: UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME
+          - name: ubuntu-24-04-server-hardened
+            template_var: UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME
           - name: windows-server-2019
             template_var: WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME
           - name: windows-server-2022

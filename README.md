@@ -113,9 +113,9 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 
 [![Test VM Templates](../../actions/workflows/test_vm_templates.yml/badge.svg)](../../actions/workflows/test_vm_templates.yml)
 
-Smoke-tests all six VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
+Smoke-tests all seven VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Ubuntu 24.04 server hardened, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
 
-The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all six `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the six matrix jobs execute one after another.
+The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all seven `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
 
 #### Workflow inputs
 
@@ -126,7 +126,7 @@ The checks are deliberately credential-free (templates ship with the provisionin
 
 [![Rebuild All VM Templates](../../actions/workflows/rebuild_all_vm_templates.yml/badge.svg)](../../actions/workflows/rebuild_all_vm_templates.yml)
 
-Rebuilds all six templates **in sequence** — Ubuntu 22.04 server, 22.04 desktop, 24.04 server, 24.04 desktop, Windows Server 2019, Windows Server 2022 — by calling the individual build workflows (which are also callable on their own via `workflow_call`), then optionally runs the Test VM Templates flow against the freshly built library items. Each build uses its own workflow's default inputs. On a single self-hosted runner expect several hours end to end.
+Rebuilds all seven templates **in sequence** — Ubuntu 22.04 server, 22.04 desktop, 24.04 server, 24.04 desktop, 24.04 server hardened, Windows Server 2019, Windows Server 2022 — by calling the individual build workflows (which are also callable on their own via `workflow_call`), then optionally runs the Test VM Templates flow against the freshly built library items. Each build uses its own workflow's default inputs. On a single self-hosted runner expect several hours end to end.
 
 #### Workflow inputs
 
@@ -199,6 +199,22 @@ Uses the same variables and secrets as the matching server template workflow (in
 - The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
 - On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.
 - The Mesa Amber legacy-GPU packages (`libgl1-amber-dri`, `libglapi-amber`) are excluded from the desktop task: on amd64 they are uninstallable next to current Mesa (`libglapi-amber` Breaks `libglapi-mesa`), and they only serve pre-OpenGL-2.1 physical GPUs — VMware guests render through `vmwgfx` on current Mesa.
+
+### Build Ubuntu 24.04 Server Hardened VM Template
+
+[![Build Ubuntu 24.04 Server Hardened VM Template](../../actions/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml)
+
+A separate, more defensively-configured Ubuntu 24.04 **server** template (`Ubuntu/24/04-hardened/`), built from the same ISO as the standard 24.04 server template. It carries the full standard baseline (known-CVE module blocks, kernel/kmod floors, sysctl set including the network keys, `snapd`/`open-vm-tools` patch assertion, `ufw`, `recovery` break-glass user, deploy form) and adds:
+
+- **UEFI Secure Boot** (`firmware = efi-secure`, parity with the Windows templates), which turns on kernel lockdown in integrity mode — asserted at build (as a warning, so a deliberate `firmware=bios`/`efi` fallback still builds). If a particular vSphere environment cannot boot the signed installer under Secure Boot, set the `firmware` variable to `efi` or `bios`.
+- **auditd** with a curated ruleset (identity/sudoers/login file watches, time-change, module load/unload, and privileged-`execve` accounting).
+- **SSH cryptographic hardening** written at finalize (after the build's own SSH session ends, so it can't break it): modern KEX/cipher/MAC allow-lists, `MaxAuthTries 4`, `LoginGraceTime 30`, no X11 forwarding, a pre-auth banner. TCP forwarding stays enabled for labs; password auth is disabled as on every template.
+- **Extra module blocklist** for obsolete filesystems and rare network protocols (`cramfs`, `freevxfs`, `jffs2`, `hfs`, `hfsplus`, `dccp`, `sctp`, `rds`, `tipc`) — `squashfs`/`overlay` are deliberately kept, since snap and containers need them.
+- **`/dev/shm` mounted `nodev,nosuid,noexec`**, core dumps disabled (`limits.d` + `systemd/coredump.conf.d`, alongside `fs.suid_dumpable=0`), and an authorized-use login banner.
+
+Everything a normal 24.04 server clone does still works (cloud-init, the deploy form, snapd, `open-vm-tools`, unattended-upgrades). **Not** included, deliberately: separate `/var`, `/tmp`, `/home` partitions with per-mount options — that needs a custom autoinstall storage layout and a live build-test loop to get right, so it is left as a follow-up rather than shipped unverified. The build otherwise reuses the standard 24.04 server workflow structure and inputs.
+
+Requirements: the same variables and secrets as the 24.04 server template (including its ISO path variable), plus `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the template name.
 
 ## Deploying the templates
 
