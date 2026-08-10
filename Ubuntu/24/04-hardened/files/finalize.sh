@@ -28,7 +28,13 @@ ClientAliveCountMax 2
 Banner /etc/issue.net
 EOF
 chmod 644 /etc/ssh/sshd_config.d/00-hardening.conf
+# Validate the sshd configuration. setup.sh already removed the host keys (so
+# clones regenerate them on first boot) and `sshd -t` refuses to run with no
+# host key present, so generate a throwaway key for the syntax check and
+# remove the generated keys again afterwards.
+ssh-keygen -A
 sshd -t
+rm -f /etc/ssh/ssh_host_*
 
 echo '> Removing vagrant account ...'
 rm -f /etc/sudoers.d/vagrant
