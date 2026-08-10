@@ -13,7 +13,7 @@ source "vsphere-iso" "base" {
   iso_checksum = ""
   iso_paths = [
     "${var.isoPath}",
-    "[] /vmimages/tools-isoimages/windows.iso",
+    "${var.toolsIsoPath}",
   ]
 
   cd_content = {

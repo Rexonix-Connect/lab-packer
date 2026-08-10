@@ -48,6 +48,10 @@ jobs:
       PKR_VAR_diskSizeGb: ${{ inputs.disk_size_gb }}
       PKR_VAR_winrmTimeout: ${{ inputs.winrm_timeout }}
       PKR_VAR_isoPath: ${{ vars.WINDOWS_SERVER_2019_X64_ISO_PATH }}
+      # Pinned VMware Tools ISO on a datastore; falls back to the ESXi host's
+      # bundled copy when the repository variable is unset.
+      PKR_VAR_toolsIsoPath: ${{ vars.WINDOWS_TOOLS_ISO_PATH || '[] /vmimages/tools-isoimages/windows.iso' }}
+      PKR_VAR_minimumToolsVersion: ${{ vars.WINDOWS_MINIMUM_TOOLS_VERSION || '12.5.4' }}
       PKR_VAR_templateName: ${{ vars.WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME }}
       PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
       PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}

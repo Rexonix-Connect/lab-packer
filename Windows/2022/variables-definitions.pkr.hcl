@@ -46,6 +46,22 @@ variable "isoPath" {
   type = string
 }
 
+# Datastore path to the VMware Tools ISO. Defaults to the ESXi host's bundled
+# copy, whose version tracks the host patch level; override with a pinned,
+# reviewable ISO uploaded to a datastore (see README) to control the Tools
+# version independently of the host.
+variable "toolsIsoPath" {
+  type    = string
+  default = "[] /vmimages/tools-isoimages/windows.iso"
+}
+
+# Minimum acceptable installed VMware Tools version; the build fails if the
+# tools ISO yields anything older. Empty disables the check.
+variable "minimumToolsVersion" {
+  type    = string
+  default = "12.5.4"
+}
+
 variable "templateName" {
   type = string
 }

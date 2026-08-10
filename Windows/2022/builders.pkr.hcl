@@ -55,7 +55,12 @@ build {
   }
 
   provisioner "powershell" {
-    scripts = ["./files/setup.ps1"]
+    scripts = ["./files/harden.ps1"]
+  }
+
+  provisioner "powershell" {
+    environment_vars = ["MINIMUM_TOOLS_VERSION=${var.minimumToolsVersion}"]
+    scripts          = ["./files/setup.ps1"]
   }
 
   provisioner "file" {
