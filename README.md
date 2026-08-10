@@ -118,20 +118,26 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 
 [![Test VM Templates](../../actions/workflows/test_vm_templates.yml/badge.svg)](../../actions/workflows/test_vm_templates.yml)
 
-Smoke-tests all seven VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Ubuntu 24.04 server hardened, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
+Smoke-tests all eight VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Ubuntu 24.04 server hardened, the NetBox appliance, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
 
-The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all seven `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
+The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all eight `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
+
+The NetBox appliance gets two extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: its fourteen `netbox.*` deploy-form properties must be present, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
 
 #### Workflow inputs
 
 - `keep_minutes` - minutes to keep each test VM running before deletion; defaults to `10`
 - `ip_timeout` - how long to wait for VMware Tools to report an IP address, e.g. `15m`; defaults to `15m`
+- `netbox_http_check` - check that the NetBox appliance actually serves HTTPS; defaults to `true`, turn it off when the runner has no route to the VM network
+- `netbox_timeout_minutes` - minutes to wait for the appliance's first-boot bootstrap before failing; defaults to `10`
 
 ### Rebuild All VM Templates
 
 [![Rebuild All VM Templates](../../actions/workflows/rebuild_all_vm_templates.yml/badge.svg)](../../actions/workflows/rebuild_all_vm_templates.yml)
 
-Rebuilds all seven templates **in sequence** — Ubuntu 22.04 server, 22.04 desktop, 24.04 server, 24.04 desktop, 24.04 server hardened, Windows Server 2019, Windows Server 2022 — by calling the individual build workflows (which are also callable on their own via `workflow_call`), then optionally runs the Test VM Templates flow against the freshly built library items. Each build uses its own workflow's default inputs. On a single self-hosted runner expect several hours end to end.
+Rebuilds all eight templates **in sequence** — Ubuntu 22.04 server, 22.04 desktop, 24.04 server, 24.04 desktop, 24.04 server hardened, the NetBox appliance, Windows Server 2019, Windows Server 2022 — by calling the individual build workflows (which are also callable on their own via `workflow_call`), then optionally runs the Test VM Templates flow against the freshly built library items. Each build uses its own workflow's default inputs. On a single self-hosted runner expect several hours end to end.
+
+The NetBox appliance is placed directly after the hardened template because it is *cloned from* that library item rather than installed from an ISO, so the order is a real dependency rather than a convention. With `continue_on_failure` it still runs after a failed hardened build — it then clones the previous hardened library item, which is deliberate: an appliance built on the last known-good base beats no appliance at all.
 
 #### Workflow inputs
 
@@ -145,6 +151,11 @@ The test flow additionally verifies on every deployed test VM that the vApp depl
 [![Normalize Deploy Form](../../actions/workflows/normalize_deploy_form.yml/badge.svg)](../../actions/workflows/normalize_deploy_form.yml)
 
 Reruns the post-build deploy-form normalization (`shared/scripts/normalize-library-ovf.py`, see "vApp deploy form") on an existing content library item, given its `template_name` — useful for templates exported while the normalize step was broken or before it existed, without spending a rebuild. Signed library items (`.cert` present) are refused.
+
+#### Workflow inputs
+
+- `template_name` - the content library item to normalize; required
+- `extra_descriptors` - the deploy-form extension the item was built with, for application-layer images: `none` (default, the eleven shared properties) or `netbox`. Getting this wrong is not silent — the normalizer refuses to run when it cannot find every property it expects.
 
 ### Build Windows Server 2019 / 2022 VM Templates
 
@@ -228,6 +239,33 @@ Everything a normal 24.04 server clone does still works (cloud-init, the deploy 
 
 Requirements: the same variables and secrets as the 24.04 server template (including its ISO path variable), plus `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the template name.
 
+### Build NetBox Appliance VM Template
+
+[![Build NetBox Appliance VM Template](../../actions/workflows/build_netbox_appliance_vm_template.yml/badge.svg)](../../actions/workflows/build_netbox_appliance_vm_template.yml)
+
+A production-ready [NetBox](https://github.com/netbox-community/netbox) appliance (`Appliances/netbox/`): PostgreSQL, Redis, gunicorn, the RQ worker and nginx on one guest, deployable from the vSphere wizard and serving HTTPS a couple of minutes after power-on.
+
+This is the first image in the repository that is **not** installed from an ISO. It uses the `vsphere-clone` builder with a `content_library_source`, so its source is the *published hardened 24.04 library item*. Everything that image guarantees — Secure Boot and kernel lockdown, the known-CVE module blocks, the sysctl baseline, auditd, the SSH crypto policy, unattended-upgrades, the `recovery` break-glass account and the deploy form — is inherited rather than reimplemented, and cannot drift. A build takes roughly ten to fifteen minutes instead of a full install, and **the hardened template must exist in the content library first**.
+
+Cloning the hardened image poses one problem worth knowing about: it has no account to log in as, by design (it deletes its provisioning user, disables SSH password authentication and strips its host keys). The build therefore attaches a NoCloud `CIDATA` CD that creates a throwaway, key-only `pkrbuild` account, authorized by an ed25519 key pair the workflow generates per run and shreds afterwards. `finalize.sh` deletes the account, and the CD is detached before the export, so nothing of it reaches the template.
+
+What is **baked into the template**: the OS packages, NetBox at the pinned tag in `/opt/netbox` (a full git clone, so `netbox-upgrade` works later), the virtual environment with its pinned requirements, the collected static files, the bundled documentation, **and the already-migrated local database**. What is **generated per deployment**, on first boot: `SECRET_KEY`, the API token pepper, `ALLOWED_HOSTS`, the time zone, the TLS certificate, the superuser and the metrics allowlist.
+
+Shipping a migrated database is safe here specifically because the local cluster authenticates by **peer over the Unix socket**, so the appliance has no database password to generate, bake, rotate or leak, and the template contains no user account — the superuser is created at deploy time. It buys a first boot of well under a minute and a template that bootstraps without reaching the network.
+
+The build refuses to produce a template that does not work: `verify.sh` starts the whole stack and requires NetBox to answer its login page over HTTPS, plain HTTP to redirect, the API to reject anonymous callers, the reported version to match the requested tag, the service hardening drop-ins to be in effect, and the entire hardened baseline (module blocks, sysctls, `/dev/shm`, auditd, `recovery`) to still hold *after* the NetBox stack was installed on top.
+
+#### Workflow inputs
+
+- `netbox_version` - NetBox release tag to install; defaults to `v4.6.7`, validated against `vX.Y.Z`
+- `ssh_timeout` - Packer SSH wait timeout; defaults to `45m`
+- `firmware` - re-asserted on the clone so Secure Boot survives the export; **must match the firmware the hardened template was built with**, or the clone will not boot
+- `cpu_count` / `memory_mb` - appliance sizing; default to `4` vCPU and `8192` MB, since the OS templates' 2/4096 is below what NetBox plus PostgreSQL needs
+
+There is deliberately no `disk_size_gb` input: the vSphere plugin does not honour disk resizing for an OVF-backed content library source, so the appliance inherits the base's 60 GB root disk. Enlarge the disk in the deploy wizard instead — the base image's `growpart`/`resize_rootfs` grow the root filesystem on first boot.
+
+Requirements: the same vCenter variables and secrets as the other builds, plus `NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the **source** it clones. No ISO path, no `PACKER_VM_PASSWORD` and no `RECOVERY_PASSWORD` are needed — this build introduces no new secrets.
+
 ## Deploying the templates
 
 ### vApp deploy form (vSphere)
@@ -248,6 +286,26 @@ Every template's content library OVF item carries user-configurable OVF properti
 | `network.domain` | DNS search domain(s) |
 | `user-data` | Advanced usage: **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the fields above |
 
+The NetBox appliance carries fourteen more, in the categories **NetBox Application**, **NetBox TLS**, **NetBox Database** and **NetBox Cache**, placed before **Advanced**. Every one of them is optional: an entirely empty form produces a working, self-contained NetBox.
+
+| Property | Meaning |
+| --- | --- |
+| `netbox.fqdn` | Name NetBox is reached by; drives `ALLOWED_HOSTS` and the certificate. Empty derives it from the guest hostname (qualified with `network.domain` when that is set) and the addresses held at first boot |
+| `netbox.time-zone` | IANA time zone, e.g. `Europe/Prague`; empty means `UTC` |
+| `netbox.admin-username` | Superuser created on first boot; empty means `admin` |
+| `netbox.admin-email` | Superuser email; empty means `admin@example.com` |
+| `netbox.admin-password` | Superuser password (masked in the wizard); **empty is the recommended value** — one is generated and shown on the VM console and in `/root/netbox-credentials.txt` |
+| `netbox.metrics-allow` | Addresses/CIDRs allowed to scrape `/metrics` and `/node-metrics`; empty leaves Prometheus metrics and the node exporter switched off entirely |
+| `netbox.tls-cert` | Base64-encoded PEM certificate chain for nginx; empty generates a self-signed certificate |
+| `netbox.tls-key` | Base64-encoded PEM private key for the above; the pair is verified to match, and a mismatch fails the bootstrap rather than quietly serving self-signed |
+| `netbox.db-host` | `host` or `host:port` of an external PostgreSQL 14+; empty uses the local cluster over its Unix socket |
+| `netbox.db-name` / `netbox.db-user` | External database and role; both default to `netbox` |
+| `netbox.db-password` | Password for the external role |
+| `netbox.redis-host` | `host` or `host:port` of an external Redis 6+ (databases 0 and 1); empty uses the local Redis on loopback |
+| `netbox.redis-password` | Password for the external Redis |
+
+> **vApp property values are not a secret store.** They live in the VM's configuration in cleartext and are readable by anyone with read access to the VM in vCenter; `type="password"` only masks the *input field* in the deploy wizard. Prefer leaving `netbox.admin-password`, the database and Redis passwords and `netbox.tls-key` empty and taking the generated values from the appliance; when automation does need to supply them, clear the values in **Edit Settings → vApp Options** once the VM has booted.
+
 Consumption paths: on Linux the native fields are read by cloud-init's OVF datasource, and the `network.*`, `username` and `public-keys` fields are applied by `/usr/local/sbin/ovf-settings.py` (a systemd oneshot that runs before networking on every boot, so editing the properties and rebooting re-applies them; it writes `/etc/netplan/90-ovf.yaml` plus a cloud-init user/keys override and never blocks boot on errors). On Windows, Cloudbase-Init's OvfService reads the same properties from the OVF environment ISO for hostname and user-data, while two local scripts (run once per deployment) apply the rest: `ovf-identity.ps1` handles username/password/public-keys deterministically — an empty password field never changes any password, keys land in `C:\ProgramData\ssh\administrators_authorized_keys` (correctly ACLed; OpenSSH Server is not preinstalled, the file takes effect once you enable it) — and `ovf-network.ps1` applies the `network.*` fields. The stock Cloudbase-Init user plugins are deliberately not used: they set a *random* password whenever the metadata carries none, which would silently break the Administrator break-glass on every form deployment.
 
 Precedence: explicitly injected `guestinfo.metadata`/`guestinfo.userdata` (e.g. from Terraform) outranks the form on Linux; vCenter guest customization specs continue to work unchanged on both OS families and are the right tool for bulk cloning.
@@ -262,3 +320,62 @@ The same first-boot machinery works outside vSphere because the datasource lists
 - **Windows**: log in on the console as `Administrator` with the `PACKER_VM_PASSWORD` secret value (or the value set via the form's `password` field at deploy time; leaving the field empty keeps the secret's value).
 
 First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log` (Linux), `C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\cloudbase-init.log` (Windows), and `journalctl -u ovf-settings` for the network helper.
+
+## NetBox appliance operations
+
+### First boot
+
+`netbox-bootstrap.service` runs once, before `netbox`, `netbox-rq` and `nginx`, which all `Requires=` it. A failed bootstrap therefore leaves the appliance visibly down rather than serving a half-configured NetBox — `systemctl status netbox-bootstrap` is red, the MOTD says so, and the traceback is in `journalctl -u netbox-bootstrap -b` and `/var/lib/netbox-appliance/failed`. Fix the cause and re-run it with `systemctl start netbox-bootstrap`; it is idempotent.
+
+It reads the deploy form through the base image's own `/usr/local/sbin/ovf-settings.py`, so there is no second OVF parser to keep in step. If the OVF environment is unavailable it fails open: every value falls back to a generated default and the appliance still comes up.
+
+On every subsequent boot `netbox-reconcile.service` re-derives the host names and, if the certificate is one the appliance generated, reissues it when the addresses change. It never touches secrets, the database or the superuser — so cloning a *running* appliance gives you a working copy of it, which is what cloning a running system should mean.
+
+### Credentials
+
+A generated admin password is written to `/root/netbox-credentials.txt` (mode 600) and echoed on the **local console** through `/etc/issue.d/60-netbox.issue`, because a freshly deployed appliance may have no other way in. It is deliberately never written to `/etc/issue.net`, which the hardened base uses as the pre-authentication SSH banner. After the first login:
+
+```
+netbox-manage changepassword admin
+netbox-credentials --clear
+```
+
+### Day-two commands
+
+All of them need root and live in `/usr/local/sbin`:
+
+| Command | Purpose |
+| --- | --- |
+| `netbox-status` | Version, URL, database mode, TLS mode, service health, last backup. Also drives the MOTD |
+| `netbox-manage …` | Any NetBox management command inside the venv, as the `netbox` account (`netbox-manage nbshell`, `netbox-manage housekeeping`, `netbox-manage changepassword`) |
+| `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/var/backups/netbox`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |
+| `netbox-restore <timestamp>` | Restores a backup pair, applies any pending migrations, restarts and health-checks. Confirm-prompted |
+| `netbox-upgrade <vX.Y.Z>` | Backs up, checks out the tag, runs `upgrade.sh`, restarts, health-checks, prints the rollback command. `--reinstall` rebuilds the venv at the current tag after editing `local_requirements.txt` |
+| `netbox-credentials` | Print or `--clear` the generated credentials and the console banner |
+
+Backups contain `SECRET_KEY` and the API token pepper, so `/var/backups/netbox` is `0700 root` and the archives are `0600`. That is deliberate: without them a restored database's API tokens and sessions cannot be validated.
+
+NetBox's **housekeeping needs no cron entry** on this appliance. Since NetBox v4.4 it is a built-in daily system job executed by `netbox-rq`, so adding a timer would only run it twice; `netbox-manage housekeeping` still runs it on demand.
+
+### Plugins
+
+Pin them in `/opt/netbox/local_requirements.txt`, list them in the `plugins` array of `/etc/netbox/appliance.json`, then `netbox-upgrade --reinstall`.
+
+### Metrics
+
+Off unless `netbox.metrics-allow` was set at deploy time. When it is, `METRICS_ENABLED` is turned on, `prometheus-node-exporter` is enabled on loopback only, and nginx serves `/metrics` (NetBox) and `/node-metrics` (host) to the listed addresses and denies everyone else. Note NetBox's own caveat that Prometheus metrics from a multi-worker gunicorn are approximate.
+
+### TLS
+
+Self-signed by default, regenerated by `netbox-reconcile` when the appliance's addresses change. Supply `netbox.tls-cert`/`netbox.tls-key` for a real certificate. **HSTS is only sent when an operator-supplied certificate is installed** — with a self-signed certificate it would turn the browser's warning into a page you cannot click through, locking you out of a freshly deployed appliance.
+
+### Interaction with the hardened baseline
+
+Everything the hardened base does is left in place. Two things it does are relevant here:
+
+- `ufw` defaults to deny-incoming, so the build opens 80/tcp and 443/tcp. PostgreSQL, Redis and the node exporter stay bound to loopback and get no rule.
+- fail2ban is configured with `banaction = ufw`; its default iptables actions would install rules alongside ufw's own chains. Two jails are enabled: `sshd` (journal backend, since Ubuntu 24.04 has no `auth.log` by default) and `netbox-login`, which reads nginx's access log because NetBox does not log rejected credentials itself — a `POST /login/` answering 200 re-rendered the form with an error, while a successful login answers 302.
+
+`netbox.service` and `netbox-rq.service` additionally get `NoNewPrivileges`, `ProtectSystem=full`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`, `RestrictSUIDSGID`, `RestrictRealtime` and `LockPersonality`. `ProtectSystem=strict`, `ProtectHome` and `MemoryDenyWriteExecute` are deliberately **not** set: NetBox runs operator-supplied custom scripts and reports, and those settings break them (and CPython extensions) in ways that only surface in production. The build asserts the drop-ins are actually in effect.
+
+One thing to be aware of: `unattended-upgrades` keeps PostgreSQL, Redis and nginx patched, but it does **not** cover the Python packages inside `/opt/netbox/venv`. `netbox-upgrade` is the mechanism for those.
