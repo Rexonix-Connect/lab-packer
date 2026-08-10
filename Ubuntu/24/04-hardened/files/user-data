@@ -107,6 +107,12 @@ autoinstall:
         - printf '* hard core 0\n' > /target/etc/security/limits.d/10-hardening.conf
         - mkdir -p /target/etc/systemd/coredump.conf.d
         - printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /target/etc/systemd/coredump.conf.d/10-hardening.conf
+        # Disable apport: its boot script forces fs.suid_dumpable=2 on every
+        # boot (LP #1452239), overriding the sysctl above; with apport disabled
+        # the value stays at the configured 0. apport is a crash reporter with
+        # no purpose on a template.
+        - printf 'enabled=0\n' > /target/etc/default/apport
+        - curtin in-target --target=/target -- bash -c 'systemctl disable --now apport.service 2>/dev/null || true'
         # Authorized-use banner shown before SSH authentication (see finalize).
         - printf 'Authorized access only. All activity may be monitored and reported.\n' > /target/etc/issue.net
         # Audit daemon with a curated ruleset appropriate for a lab image.

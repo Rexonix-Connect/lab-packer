@@ -216,6 +216,7 @@ A separate, more defensively-configured Ubuntu 24.04 **server** template (`Ubunt
 - **SSH cryptographic hardening** written at finalize (after the build's own SSH session ends, so it can't break it): modern KEX/cipher/MAC allow-lists, `MaxAuthTries 4`, `LoginGraceTime 30`, no X11 forwarding, a pre-auth banner. TCP forwarding stays enabled for labs; password auth is disabled as on every template.
 - **Extra module blocklist** for obsolete filesystems and rare network protocols (`cramfs`, `freevxfs`, `jffs2`, `hfs`, `hfsplus`, `dccp`, `sctp`, `rds`, `tipc`) — `squashfs`/`overlay` are deliberately kept, since snap and containers need them.
 - **`/dev/shm` mounted `nodev,nosuid,noexec`**, core dumps disabled (`limits.d` + `systemd/coredump.conf.d`, alongside `fs.suid_dumpable=0`), and an authorized-use login banner.
+- **`apport` disabled** (`/etc/default/apport` `enabled=0`): its boot script otherwise forces `fs.suid_dumpable=2` on every boot regardless of sysctl (LP #1452239), and it is a crash reporter with no purpose on a template — disabling it lets the `fs.suid_dumpable=0` setting hold.
 
 Everything a normal 24.04 server clone does still works (cloud-init, the deploy form, snapd, `open-vm-tools`, unattended-upgrades). **Not** included, deliberately: separate `/var`, `/tmp`, `/home` partitions with per-mount options — that needs a custom autoinstall storage layout and a live build-test loop to get right, so it is left as a follow-up rather than shipped unverified. The build otherwise reuses the standard 24.04 server workflow structure and inputs.
 
