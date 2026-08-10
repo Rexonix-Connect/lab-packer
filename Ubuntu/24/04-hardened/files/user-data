@@ -1,0 +1,127 @@
+#cloud-config
+autoinstall:
+    version: 1
+    early-commands:
+        # Stop ssh for packer; noble socket-activates ssh, so stop both units.
+        - sudo systemctl stop ssh.service ssh.socket || true
+    locale: en_US
+    keyboard:
+        layout: us
+    timezone: Etc/UTC
+    identity:
+        hostname: ubuntu-server
+        username: vagrant
+        password: '${vm_password_hash}'
+    ssh:
+        install-server: yes
+        allow-pw: yes
+    storage:
+        layout:
+            name: direct
+            match:
+                size: largest
+    apt:
+        geoip: false
+        # Hide the -security pocket from the installer so subiquity's
+        # unattended-upgrades pass finds nothing to install (subiquity has no
+        # 'updates: none'); a late-command re-adds it before apt-get update.
+        disable_suites: [security]
+        primary:
+            - arches: [i386, amd64]
+              uri: "http://archive.ubuntu.com/ubuntu/"
+    packages:
+        - ca-certificates
+        - curl
+        - gnupg
+        - software-properties-common
+        - ufw
+        - unattended-upgrades
+        - open-vm-tools
+        - unzip
+        - python3
+        - python3-pip
+        - cloud-guest-utils
+    user-data:
+        disable_root: true
+        # Grow cloned VMs if their virtual disk is enlarged before first boot.
+        growpart:
+            mode: auto
+            devices: ['/']
+            ignore_growroot_disabled: false
+        resize_rootfs: true
+    late-commands:
+        - sed -i -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /target/etc/ssh/sshd_config
+        - sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/g' /target/etc/ssh/sshd_config
+        - echo 'vagrant ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/vagrant
+        - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/vagrant
+        # Console break-glass: password login works on the console only, since
+        # finalize disables SSH password authentication.
+        - >-
+          curtin in-target --target=/target -- useradd --create-home
+          --shell /bin/bash --groups sudo
+          --password '${recovery_password_hash}' recovery
+        # Deploy-time network personalization: parse OVF environment properties
+        # into netplan before networkd starts (see ovf-settings.py).
+        - mkdir -p /mnt/lab-cidata
+        - mount -o ro /dev/disk/by-label/CIDATA /mnt/lab-cidata || mount -o ro /dev/disk/by-label/cidata /mnt/lab-cidata
+        - cp /mnt/lab-cidata/ovf-settings.py /target/usr/local/sbin/ovf-settings.py
+        - cp /mnt/lab-cidata/ovf-settings.service /target/etc/systemd/system/ovf-settings.service
+        - umount /mnt/lab-cidata
+        - curtin in-target --target=/target -- chmod 755 /usr/local/sbin/ovf-settings.py
+        - curtin in-target --target=/target -- systemctl enable ovf-settings.service
+        # Undo apt.disable_suites: noble uses deb822 sources and curtin drops
+        # the emptied -security stanza from ubuntu.sources, so append it back.
+        - >-
+          printf '\nTypes: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' >> /target/etc/apt/sources.list.d/ubuntu.sources
+        - curtin in-target --target=/target -- apt-get update
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get -o APT::Get::Always-Include-Phased-Updates=true upgrade --yes
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes kmod unattended-upgrades open-vm-tools
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}" kmod)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kmod_version}"'
+        # CVE-2026-31431 "Copy Fail": AF_ALG AEAD interface.
+        - printf 'install algif_aead /bin/false\nblacklist algif_aead\n' > /target/etc/modprobe.d/manual-disable-algif_aead.conf
+        # CVE-2026-46331 "pedit COW": tc-pedit traffic control action.
+        - printf 'install act_pedit /bin/false\nblacklist act_pedit\n' > /target/etc/modprobe.d/manual-disable-act_pedit.conf
+        # CVE-2026-46300 "Fragnesia", CVE-2026-43284 "Dirty Frag" and
+        # CVE-2026-43503 "DirtyClone": IPsec ESP. Remove this file (and rebuild
+        # the initramfs) on clones that must run IPsec/StrongSwan workloads.
+        - printf 'install esp4 /bin/false\nblacklist esp4\ninstall esp6 /bin/false\nblacklist esp6\n' > /target/etc/modprobe.d/manual-disable-esp.conf
+        # CVE-2026-43500 "Dirty Frag" and CVE-2026-43503 "DirtyClone": RxRPC/AFS.
+        - printf 'install rxrpc /bin/false\nblacklist rxrpc\n' > /target/etc/modprobe.d/manual-disable-rxrpc.conf
+        # 'zz-' so this applies after Ubuntu's unnumbered protect-links.conf,
+        # which sorts after numeric prefixes and resets fs.protected_fifos=1.
+        - >-
+          printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\nfs.suid_dumpable = 0\nkernel.io_uring_disabled = 2\nkernel.apparmor_restrict_unprivileged_userns = 1\nnet.ipv4.conf.all.accept_redirects = 0\nnet.ipv4.conf.default.accept_redirects = 0\nnet.ipv4.conf.all.secure_redirects = 0\nnet.ipv4.conf.default.secure_redirects = 0\nnet.ipv4.conf.all.send_redirects = 0\nnet.ipv4.conf.default.send_redirects = 0\nnet.ipv4.conf.all.accept_source_route = 0\nnet.ipv4.conf.default.accept_source_route = 0\nnet.ipv4.conf.all.log_martians = 1\nnet.ipv4.conf.default.log_martians = 1\nnet.ipv4.icmp_echo_ignore_broadcasts = 1\nnet.ipv4.icmp_ignore_bogus_error_responses = 1\nnet.ipv6.conf.all.accept_redirects = 0\nnet.ipv6.conf.default.accept_redirects = 0\nnet.ipv6.conf.all.accept_source_route = 0\nnet.ipv6.conf.default.accept_source_route = 0\n' > /target/etc/sysctl.d/zz-lab-hardening.conf
+        # Keep clones patching known vulnerabilities on their own.
+        - printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /target/etc/apt/apt.conf.d/20auto-upgrades
+        # --- Hardened image extras (Ubuntu/24/04-hardened only) ---
+        # Block obsolete filesystems and rare network protocols (CIS); a normal
+        # lab VM never needs them. squashfs/overlay are deliberately NOT blocked
+        # because snap and containers rely on them.
+        - printf 'install cramfs /bin/false\nblacklist cramfs\ninstall freevxfs /bin/false\nblacklist freevxfs\ninstall jffs2 /bin/false\nblacklist jffs2\ninstall hfs /bin/false\nblacklist hfs\ninstall hfsplus /bin/false\nblacklist hfsplus\ninstall dccp /bin/false\nblacklist dccp\ninstall sctp /bin/false\nblacklist sctp\ninstall rds /bin/false\nblacklist rds\ninstall tipc /bin/false\nblacklist tipc\n' > /target/etc/modprobe.d/manual-disable-hardened-extra.conf
+        # Mount /dev/shm nodev,nosuid,noexec (shared memory never needs exec).
+        - printf 'tmpfs /dev/shm tmpfs defaults,nodev,nosuid,noexec 0 0\n' >> /target/etc/fstab
+        # Disable core dumps (defence in depth alongside fs.suid_dumpable=0).
+        - printf '* hard core 0\n' > /target/etc/security/limits.d/10-hardening.conf
+        - mkdir -p /target/etc/systemd/coredump.conf.d
+        - printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /target/etc/systemd/coredump.conf.d/10-hardening.conf
+        # Authorized-use banner shown before SSH authentication (see finalize).
+        - printf 'Authorized access only. All activity may be monitored and reported.\n' > /target/etc/issue.net
+        # Audit daemon with a curated ruleset appropriate for a lab image.
+        - curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install --yes auditd audispd-plugins
+        - printf '## Hardened lab image audit rules\n-D\n-b 8192\n-f 1\n-w /etc/passwd -p wa -k identity\n-w /etc/group -p wa -k identity\n-w /etc/shadow -p wa -k identity\n-w /etc/gshadow -p wa -k identity\n-w /etc/sudoers -p wa -k scope\n-w /etc/sudoers.d/ -p wa -k scope\n-w /var/log/lastlog -p wa -k logins\n-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change\n-w /etc/localtime -p wa -k time-change\n-a always,exit -F arch=b64 -S init_module -S delete_module -k modules\n-w /sbin/insmod -p x -k modules\n-w /sbin/rmmod -p x -k modules\n-w /sbin/modprobe -p x -k modules\n-a always,exit -F arch=b64 -C euid!=uid -F euid=0 -F auid>=1000 -F auid!=4294967295 -S execve -k privileged\n' > /target/etc/audit/rules.d/hardening.rules
+        - curtin in-target --target=/target -- systemctl enable auditd
+        # --- end hardened extras ---
+        # modprobe.d is bundled into the initramfs, so rebuild it after the blocks.
+        - curtin in-target --target=/target -- update-initramfs -u
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          for mod in algif_aead act_pedit esp4 esp6 rxrpc cramfs freevxfs jffs2 hfs hfsplus dccp sctp rds tipc; do
+          modprobe -n -v "$${mod}" | grep -q "/bin/false" || exit 1;
+          done'
+        - >-
+          curtin in-target --target=/target -- bash -c '
+          version="$(dpkg-query -W -f="\$${Version}\n" "linux-image-[0-9]*" | sort -V | tail -n 1)";
+          dpkg --compare-versions "$${version}" ge "${minimum_kernel_version}"'

@@ -19,7 +19,7 @@ permissions:
   contents: read
   packages: read
 
-# Rebuilds all six templates in sequence by calling the individual build
+# Rebuilds all templates in sequence by calling the individual build
 # workflows; on a single self-hosted runner expect several hours end to end.
 jobs:
   ubuntu-22-04-server:
@@ -44,9 +44,15 @@ jobs:
     uses: ./.github/workflows/build_ubuntu_24_04_desktop_vm_template.yml
     secrets: inherit
 
-  windows-2019:
+  ubuntu-24-04-server-hardened:
     needs: ubuntu-24-04-desktop
     if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-desktop.result == 'success') }}
+    uses: ./.github/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml
+    secrets: inherit
+
+  windows-2019:
+    needs: ubuntu-24-04-server-hardened
+    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result == 'success') }}
     uses: ./.github/workflows/build_windows_server_2019_vm_template.yml
     secrets: inherit
 
