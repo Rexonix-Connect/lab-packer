@@ -55,5 +55,7 @@ apt-get install "${APT_OPTS[@]}" "${packages[@]}"
 # inbound; removing the daemon is defense in depth. CUPS itself stays, so
 # local and manually-added network printers keep working - only automatic
 # discovery of remote printers is lost.
-echo '> Removing cups-browsed (2024 CUPS RCE listener) ...'
-apt-get purge "${APT_OPTS[@]}" cups-browsed || true
+if dpkg-query -W -f='${Status}' cups-browsed 2>/dev/null | grep -q 'install ok installed'; then
+	echo '> Removing cups-browsed (2024 CUPS RCE listener) ...'
+	apt-get purge "${APT_OPTS[@]}" cups-browsed
+fi

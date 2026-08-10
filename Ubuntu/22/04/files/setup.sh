@@ -59,7 +59,12 @@ done
 # Best-effort: a transient snap store issue must not fail the template build.
 if command -v snap >/dev/null 2>&1; then
 	echo '> Refreshing seeded snaps ...'
-	snap refresh || echo '> snap refresh reported an issue; continuing'
+	# Bound the refresh so a stalled snap store cannot hang the build.
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 600 snap refresh || echo '> snap refresh timed out or reported an issue; continuing'
+	else
+		snap refresh || echo '> snap refresh reported an issue; continuing'
+	fi
 fi
 echo '> Verifying recovery account and OVF network helper ...'
 id recovery >/dev/null
