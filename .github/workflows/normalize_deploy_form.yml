@@ -8,6 +8,14 @@ on:
         description: Content library item (template) name to normalize
         type: string
         required: true
+      extra_descriptors:
+        description: Deploy-form extension the item was built with (application-layer images only)
+        type: choice
+        required: false
+        default: none
+        options:
+          - none
+          - netbox
 
 permissions:
   contents: read
@@ -33,5 +41,9 @@ jobs:
           VCENTER_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
           LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
           TEMPLATE_NAME: ${{ inputs.template_name }}
+          # Application-layer images extend the deploy form; the normalizer has
+          # to be given the same descriptor file the build used, or their extra
+          # properties end up in an "Other" category.
+          VAPP_EXTRA_DESCRIPTORS: ${{ inputs.extra_descriptors == 'none' && '' || format('shared/vapp-descriptors/{0}.json', inputs.extra_descriptors) }}
         run: |
           python3 shared/scripts/normalize-library-ovf.py

@@ -7,7 +7,13 @@ random order in the vSphere deploy wizard. This runs as a shell-local
 provisioner while the build VM still exists (before the content library
 export) and rewrites the property descriptors; ids and values are untouched,
 and properties outside the descriptor table are preserved as-is after it.
+
+Application-layer images add their own fields on top of the shared form by
+pointing VAPP_EXTRA_DESCRIPTORS at a JSON file (see load_extra_descriptors);
+with the variable unset the eleven built-in properties are the whole form,
+exactly as before.
 """
+import json
 import os
 import ssl
 import sys
@@ -30,7 +36,7 @@ class Descriptor(NamedTuple):
 # pair, then DNS), and the advanced escape hatch last. The library OVF is
 # normalized to this order by normalize-library-ovf.py after export, because
 # the vCenter export scrambles property order.
-DESCRIPTORS = [
+BASE_DESCRIPTORS = [
     Descriptor("hostname", "Guest Identity", "Hostname",
                "Guest hostname; empty keeps the template default"),
     Descriptor("username", "Guest Identity", "Username",
@@ -62,6 +68,56 @@ DESCRIPTORS = [
                " Cloudbase-Init userdata (Windows), applied in addition to"
                " the fields above"),
 ]
+
+# The eleven properties every template carries. Only these are required to
+# already exist on the build VM; image-specific extras are created.
+BASE_IDS = frozenset(descriptor.id for descriptor in BASE_DESCRIPTORS)
+
+
+def load_extra_descriptors(descriptors):
+    """Merge image-specific deploy-form properties into the built-in list.
+
+    VAPP_EXTRA_DESCRIPTORS points at a JSON file so that this script and
+    normalize-library-ovf.py (which imports this module) always agree on the
+    form's shape:
+
+        {"insert_before": "user-data",
+         "descriptors": [{"id": ..., "category": ..., "label": ...,
+                          "description": ..., "type": "string"}]}
+
+    insert_before names the built-in property the extras are placed in front
+    of, so an image can keep the generic "Advanced" escape hatch last; omit it
+    to append. Unset or empty variable leaves the built-in list untouched.
+    """
+    path = os.environ.get("VAPP_EXTRA_DESCRIPTORS", "").strip()
+    if not path:
+        return descriptors
+    with open(path) as fh:
+        spec = json.load(fh)
+    extras = [Descriptor(id=entry["id"], category=entry["category"],
+                         label=entry["label"],
+                         description=entry["description"],
+                         type=entry.get("type", "string"))
+              for entry in spec.get("descriptors", [])]
+    if not extras:
+        return descriptors
+    clashes = sorted({e.id for e in extras} & {d.id for d in descriptors})
+    if clashes:
+        sys.exit("set-vapp-descriptors: %s redefines built-in propert%s: %s"
+                 % (path, "y" if len(clashes) == 1 else "ies",
+                    ", ".join(clashes)))
+    anchor = spec.get("insert_before", "")
+    if not anchor:
+        return descriptors + extras
+    ids = [descriptor.id for descriptor in descriptors]
+    if anchor not in ids:
+        sys.exit("set-vapp-descriptors: %s sets insert_before to %r, which is"
+                 " not a built-in property" % (path, anchor))
+    index = ids.index(anchor)
+    return descriptors[:index] + extras + descriptors[index:]
+
+
+DESCRIPTORS = load_extra_descriptors(BASE_DESCRIPTORS)
 
 
 def env(name):
@@ -96,8 +152,8 @@ def build_property_specs(existing):
     key collisions within one reconfigure.
     """
     known = {descriptor.id for descriptor in DESCRIPTORS}
-    extras = sorted((prop for prop in existing.values()
-                     if prop.id not in known), key=lambda prop: prop.key)
+    foreign = sorted((prop for prop in existing.values()
+                      if prop.id not in known), key=lambda prop: prop.key)
     base = max((prop.key for prop in existing.values()), default=-1) + 1
 
     specs = [
@@ -106,6 +162,10 @@ def build_property_specs(existing):
     ]
     key = base
     for descriptor in DESCRIPTORS:
+        # A descriptor the VM does not carry yet is created empty: that is how
+        # an image-specific property first appears on a cloned build VM, whose
+        # vAppConfig only has the source template's properties.
+        current = existing.get(descriptor.id)
         specs.append(vim.vApp.PropertySpec(
             operation="add",
             info=vim.vApp.PropertyInfo(
@@ -116,10 +176,10 @@ def build_property_specs(existing):
                 description=descriptor.description,
                 type=descriptor.type,
                 userConfigurable=True,
-                value=existing[descriptor.id].value or "",
+                value=(current.value if current else "") or "",
             )))
         key += 1
-    for prop in extras:
+    for prop in foreign:
         specs.append(vim.vApp.PropertySpec(
             operation="add",
             info=vim.vApp.PropertyInfo(
@@ -133,7 +193,7 @@ def build_property_specs(existing):
                 value=prop.value or "",
             )))
         key += 1
-    return specs, extras
+    return specs, foreign
 
 
 def main():
@@ -158,20 +218,25 @@ def main():
 
         vapp = vm.config.vAppConfig
         existing = {p.id: p for p in (vapp.property if vapp else [])}
-        missing = [d.id for d in DESCRIPTORS if d.id not in existing]
+        missing = [d.id for d in DESCRIPTORS
+                   if d.id in BASE_IDS and d.id not in existing]
         if missing:
             sys.exit("set-vapp-descriptors: VM lacks expected properties: %s"
                      % ", ".join(missing))
+        created = [d.id for d in DESCRIPTORS if d.id not in existing]
 
-        specs, extras = build_property_specs(existing)
+        specs, foreign = build_property_specs(existing)
         WaitForTask(vm.ReconfigVM_Task(
             spec=vim.vm.ConfigSpec(
                 vAppConfig=vim.vApp.VmConfigSpec(property=specs))))
         message = ("set-vapp-descriptors: categorized, labeled and ordered %d"
                    " deploy-form properties on %s" % (len(DESCRIPTORS), vm_name))
-        if extras:
+        if created:
+            message += " (added %d image-specific properties: %s)" % (
+                len(created), ", ".join(created))
+        if foreign:
             message += " (preserved %d other properties: %s)" % (
-                len(extras), ", ".join(prop.id for prop in extras))
+                len(foreign), ", ".join(prop.id for prop in foreign))
         print(message)
     finally:
         Disconnect(si)

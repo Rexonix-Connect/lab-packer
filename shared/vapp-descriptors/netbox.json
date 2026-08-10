@@ -1,0 +1,103 @@
+{
+  "insert_before": "user-data",
+  "descriptors": [
+    {
+      "id": "netbox.fqdn",
+      "category": "NetBox Application",
+      "label": "Public FQDN",
+      "description": "Fully qualified name NetBox is reached by; used for ALLOWED_HOSTS and the TLS certificate. Empty derives it from the guest hostname and the addresses held at first boot",
+      "type": "string"
+    },
+    {
+      "id": "netbox.time-zone",
+      "category": "NetBox Application",
+      "label": "Time Zone",
+      "description": "IANA time zone for NetBox, for example Europe/Prague; empty means UTC",
+      "type": "string"
+    },
+    {
+      "id": "netbox.admin-username",
+      "category": "NetBox Application",
+      "label": "Admin Username",
+      "description": "NetBox superuser created on first boot; empty means admin",
+      "type": "string"
+    },
+    {
+      "id": "netbox.admin-email",
+      "category": "NetBox Application",
+      "label": "Admin Email",
+      "description": "Email address of the NetBox superuser; empty means admin@example.com",
+      "type": "string"
+    },
+    {
+      "id": "netbox.admin-password",
+      "category": "NetBox Application",
+      "label": "Admin Password",
+      "description": "Password for the NetBox superuser. Leave empty (recommended) to generate one and read it from the VM console or /root/netbox-credentials.txt; values entered here are stored in the VM configuration in cleartext and are readable by any vCenter user with access to the VM",
+      "type": "password"
+    },
+    {
+      "id": "netbox.metrics-allow",
+      "category": "NetBox Application",
+      "label": "Metrics Allowlist",
+      "description": "Space or comma separated addresses/CIDRs allowed to scrape /metrics and /node-metrics; empty leaves Prometheus metrics and node-exporter switched off",
+      "type": "string"
+    },
+    {
+      "id": "netbox.tls-cert",
+      "category": "NetBox TLS",
+      "label": "TLS Certificate Chain (base64 PEM)",
+      "description": "Base64-encoded PEM certificate chain for nginx; empty generates a self-signed certificate. HSTS is only sent when a certificate is supplied here, because HSTS makes a self-signed warning impossible to click through",
+      "type": "string"
+    },
+    {
+      "id": "netbox.tls-key",
+      "category": "NetBox TLS",
+      "label": "TLS Private Key (base64 PEM)",
+      "description": "Base64-encoded PEM private key matching the certificate above; required only when a certificate is supplied",
+      "type": "password"
+    },
+    {
+      "id": "netbox.db-host",
+      "category": "NetBox Database",
+      "label": "External PostgreSQL Host",
+      "description": "Host or host:port of an external PostgreSQL 14+ server; empty uses the appliance's local PostgreSQL over a Unix socket with peer authentication (no password anywhere)",
+      "type": "string"
+    },
+    {
+      "id": "netbox.db-name",
+      "category": "NetBox Database",
+      "label": "External Database Name",
+      "description": "Database name on the external server; empty means netbox",
+      "type": "string"
+    },
+    {
+      "id": "netbox.db-user",
+      "category": "NetBox Database",
+      "label": "External Database User",
+      "description": "Login role on the external server; empty means netbox",
+      "type": "string"
+    },
+    {
+      "id": "netbox.db-password",
+      "category": "NetBox Database",
+      "label": "External Database Password",
+      "description": "Password for the external database role; stored in the VM configuration in cleartext, so prefer a dedicated least-privilege role",
+      "type": "password"
+    },
+    {
+      "id": "netbox.redis-host",
+      "category": "NetBox Cache",
+      "label": "External Redis Host",
+      "description": "Host or host:port of an external Redis 6+ server; databases 0 and 1 are used for tasks and caching. Empty uses the appliance's local Redis on loopback",
+      "type": "string"
+    },
+    {
+      "id": "netbox.redis-password",
+      "category": "NetBox Cache",
+      "label": "External Redis Password",
+      "description": "Password for the external Redis server; stored in the VM configuration in cleartext",
+      "type": "password"
+    }
+  ]
+}
