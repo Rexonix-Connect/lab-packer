@@ -14,6 +14,15 @@ on:
         type: string
         required: false
         default: 45m
+      firmware:
+        description: VM firmware (efi-secure, efi, or bios) - fall back if Secure Boot cannot boot the installer
+        type: choice
+        required: false
+        default: efi-secure
+        options:
+          - efi-secure
+          - efi
+          - bios
 
   # Callable from the Rebuild All VM Templates orchestrator.
   workflow_call:
@@ -28,6 +37,11 @@ on:
         type: string
         required: false
         default: 45m
+      firmware:
+        description: VM firmware (efi-secure, efi, or bios)
+        type: string
+        required: false
+        default: efi-secure
 
 permissions:
   contents: read
@@ -47,6 +61,9 @@ jobs:
       PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
       PKR_VAR_diskSizeGb: ${{ inputs.disk_size_gb }}
       PKR_VAR_sshTimeout: ${{ inputs.ssh_timeout }}
+      # Defaults to UEFI Secure Boot; override to efi/bios if a specific
+      # environment cannot boot the signed installer under Secure Boot.
+      PKR_VAR_firmware: ${{ inputs.firmware }}
       # Reuses the standard 24.04 Server ISO; only the build definition differs.
       PKR_VAR_isoPath: ${{ vars.UBUNTU_24_04_SERVER_X64_ISO_PATH }}
       PKR_VAR_templateName: ${{ vars.UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME }}

@@ -114,6 +114,10 @@ variable "minimumKernelVersion" {
 variable "firmware" {
   type    = string
   default = "efi-secure"
+  validation {
+    condition     = contains(["efi-secure", "efi", "bios"], var.firmware)
+    error_message = "The firmware variable must be one of efi-secure, efi, or bios."
+  }
 }
 
 variable "isoPath" {
