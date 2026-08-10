@@ -146,7 +146,9 @@ Reruns the post-build deploy-form normalization (`shared/scripts/normalize-libra
 [![Build Windows Server 2019 VM Template](../../actions/workflows/build_windows_server_2019_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2019_vm_template.yml)
 [![Build Windows Server 2022 VM Template](../../actions/workflows/build_windows_server_2022_vm_template.yml/badge.svg)](../../actions/workflows/build_windows_server_2022_vm_template.yml)
 
-The Windows builds boot the installation ISO together with the ESXi host's bundled VMware Tools ISO (`/vmimages/tools-isoimages/windows.iso`, present on ESXi by default): Windows Setup loads the `pvscsi` driver from the tools ISO, and a first-logon script installs the full VMware Tools (bringing up the `vmxnet3` driver) and enables WinRM for the Packer communicator. VMs run UEFI with Secure Boot, 4 vCPU / 8192 MB, and a 90 GB thin disk by default.
+The Windows builds boot the installation ISO together with a VMware Tools ISO: Windows Setup loads the `pvscsi` driver from the tools ISO, and a first-logon script installs the full VMware Tools (bringing up the `vmxnet3` driver) and enables WinRM for the Packer communicator. VMs run UEFI with Secure Boot, 4 vCPU / 8192 MB, and a 90 GB thin disk by default.
+
+By default the tools ISO is the ESXi host's bundled copy (`/vmimages/tools-isoimages/windows.iso`, present on ESXi), whose version tracks the host patch level. Set the `WINDOWS_TOOLS_ISO_PATH` repository variable to a pinned tools ISO uploaded to a datastore (e.g. `[datastore1] iso/VMware-Tools-windows-13.1.0.0-25218885.iso`) to control the Tools version independently of the host — download "VMware Tools packages for Windows" (the `...zip`) from Broadcom and extract the `.iso` from it. The build asserts the installed Tools version is at least `WINDOWS_MINIMUM_TOOLS_VERSION` (default `12.5.4`, the fixed release for the 2025-2026 Tools advisories) and fails otherwise.
 
 #### Workflow inputs
 
@@ -159,6 +161,8 @@ Uses the same vCenter variables and secrets as the Ubuntu template workflows, pl
 
 - `WINDOWS_SERVER_2019_X64_ISO_PATH` / `WINDOWS_SERVER_2022_X64_ISO_PATH` - path to the Windows Server ISO in the vCenter datastore
 - `WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME` / `WINDOWS_SERVER_2022_X64_VM_TEMPLATE_NAME` - name of the VM template to create
+- `WINDOWS_TOOLS_ISO_PATH` - optional datastore path to a pinned VMware Tools ISO; unset uses the ESXi host's bundled tools ISO
+- `WINDOWS_MINIMUM_TOOLS_VERSION` - optional minimum acceptable installed VMware Tools version; defaults to `12.5.4`
 
 Notes:
 
@@ -168,7 +172,8 @@ Notes:
 
 #### Windows template hardening
 
-- The `windows-update` Packer provisioner installs every applicable non-preview update during the build, and the verification step fails the build if any software update is still pending — templates ship with known vulnerabilities patched at build time.
+- The `windows-update` Packer provisioner installs every applicable non-preview update during the build, and the verification step fails the build if any software update is still pending — templates ship with known vulnerabilities patched at build time. Deployed clones keep patching themselves: the build sets Windows Update to auto-download and install on a schedule (`AUOptions=4`), since Windows Server does not self-install updates by default.
+- `harden.ps1` applies a baseline of OS hardening the verification step then confirms (build fails if any did not take): SMB signing required on server and client and SMBv1 removed; NTLMv2-only auth with LM/NTLMv1 refused and no stored LM hash; WDigest cleartext credential caching off; LSA protection (`RunAsPPL`) enabling LSASS anti-tamper on the next boot; LLMNR and NetBIOS-over-TCP/IP name resolution disabled (responder/relay surface); Schannel limited to TLS 1.2+ with RC4/DES/3DES disabled; PowerShell script-block logging and a process-creation-with-command-line audit policy for visibility; and the Print Spooler disabled (PrintNightmare-class surface). Each is one registry value or service state and is listed here so a lab that needs the legacy behaviour can revert exactly that one — e.g. `Set-Service Spooler -StartupType Automatic` to print, or re-enabling TLS 1.0 for an ancient endpoint. NTLMv2 remains enabled, so WinRM (including Ansible-over-WinRM) against clones is unaffected.
 - UAC stays enabled throughout: the build uses `LocalAccountTokenFilterPolicy` for the WinRM session instead of disabling LUA, and removes that policy again during finalize.
 - Finalize removes autologon credentials and unattend answer files (including `C:\Windows\Panther` copies, which contain the build password) and cleans the update cache, temporary files and event logs. The session-hostile steps — re-hardening WinRM (no unencrypted transport, no basic authentication), removing `LocalAccountTokenFilterPolicy`, disabling the `vagrant` provisioning account (disabled rather than deleted; clone customization manages accounts) and the power-off — run from a detached one-shot SYSTEM scheduled task, because every WinRM request re-authenticates and changing WinRM auth or the build account from inside Packer's own session would sever it mid-shutdown. The task deletes the finalize scripts and itself before powering off, so nothing is left behind in the template.
 - The generated answer-file CD carries the plaintext build credentials, so all CD-ROM devices are removed from the template (`remove_cdrom`).

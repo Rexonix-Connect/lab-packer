@@ -6,14 +6,15 @@ source "vsphere-iso" "base" {
   disk_controller_type = ["pvscsi"]
   guest_os_type        = "windows2019srv_64Guest"
 
-  # ISO configuration: the Windows ISO plus the ESXi host's bundled VMware
-  # Tools ISO. WinPE loads the pvscsi driver from the tools ISO (E:) and the
-  # first-logon script installs the full tools, bringing up the vmxnet3
-  # driver, before Packer connects over WinRM.
+  # ISO configuration: the Windows ISO plus a VMware Tools ISO (var.toolsIsoPath,
+  # the ESXi host's bundled copy by default or a pinned datastore ISO). WinPE
+  # loads the pvscsi driver from the tools ISO (E:) and the first-logon script
+  # installs the full tools, bringing up the vmxnet3 driver, before Packer
+  # connects over WinRM.
   iso_checksum = ""
   iso_paths = [
     "${var.isoPath}",
-    "[] /vmimages/tools-isoimages/windows.iso",
+    "${var.toolsIsoPath}",
   ]
 
   cd_content = {
