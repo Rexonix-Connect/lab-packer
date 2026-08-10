@@ -1,0 +1,80 @@
+#!/bin/bash
+# Back up everything a NetBox appliance cannot rebuild from the image: the
+# database, uploaded media, custom scripts and reports, the plugin list and the
+# appliance configuration (which carries SECRET_KEY and the API token pepper -
+# without them, existing API tokens and sessions cannot be validated after a
+# restore).
+#
+# Run by netbox-backup.timer nightly, or by hand before any risky change.
+set -euo pipefail
+
+BACKUP_DIR=/var/backups/netbox
+CONFIG=/etc/netbox/appliance.json
+NETBOX_ROOT=/opt/netbox
+RETENTION_DAYS=14
+
+# shellcheck disable=SC1091
+[ -f /etc/default/netbox-backup ] && . /etc/default/netbox-backup
+
+if [ ! -f "${CONFIG}" ]; then
+	echo "netbox-backup: ${CONFIG} is missing; the appliance is not bootstrapped" >&2
+	exit 1
+fi
+
+install -d -m 0700 -o root -g root "${BACKUP_DIR}"
+stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+dump="${BACKUP_DIR}/netbox-${stamp}.dump"
+files="${BACKUP_DIR}/netbox-${stamp}.files.tar.gz"
+
+# The database connection comes from the appliance configuration, so an
+# external PostgreSQL is backed up exactly like the local one.
+eval "$(python3 - "${CONFIG}" <<'PY'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1]) as handle:
+    database = json.load(handle)["database"]
+
+def export(name, value):
+    print("export %s=%s" % (name, shlex.quote(str(value))))
+
+export("PGDATABASE", database.get("NAME", "netbox"))
+export("PGUSER", database.get("USER", "netbox"))
+if database.get("HOST"):
+    export("PGHOST", database["HOST"])
+if database.get("PORT"):
+    export("PGPORT", database["PORT"])
+if database.get("PASSWORD"):
+    export("PGPASSWORD", database["PASSWORD"])
+PY
+)"
+
+echo "netbox-backup: dumping ${PGDATABASE} ..."
+umask 077
+if [ -n "${PGHOST:-}" ]; then
+	pg_dump --format=custom --file="${dump}"
+else
+	# Local cluster: peer authentication, so connect as the netbox account.
+	runuser -u netbox -- env PGDATABASE="${PGDATABASE}" PGUSER="${PGUSER}" \
+		pg_dump --format=custom >"${dump}"
+fi
+
+echo "netbox-backup: archiving media, scripts, reports and configuration ..."
+tar --create --gzip --file="${files}" \
+	--warning=no-file-changed \
+	--directory=/ \
+	"etc/netbox/appliance.json" \
+	"opt/netbox/local_requirements.txt" \
+	"${NETBOX_ROOT#/}/netbox/media" \
+	"${NETBOX_ROOT#/}/netbox/scripts" \
+	"${NETBOX_ROOT#/}/netbox/reports"
+
+chmod 0600 "${dump}" "${files}"
+
+echo "netbox-backup: pruning archives older than ${RETENTION_DAYS} days ..."
+find "${BACKUP_DIR}" -maxdepth 1 -type f \
+	\( -name 'netbox-*.dump' -o -name 'netbox-*.files.tar.gz' \) \
+	-mtime "+${RETENTION_DAYS}" -print -delete
+
+echo "netbox-backup: wrote $(basename "${dump}") and $(basename "${files}")"

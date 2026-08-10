@@ -1,0 +1,21 @@
+[Unit]
+Description=NetBox appliance address and certificate reconciliation
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Runs on every boot after the appliance has been bootstrapped. The hardened
+# base re-applies the deploy form's network settings on every boot, so an
+# address or host name can change under a running appliance; this keeps
+# ALLOWED_HOSTS and a self-signed certificate in step with it. Secrets, the
+# database and the superuser are never touched.
+After=cloud-final.service ovf-settings.service network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+Before=netbox.service netbox-rq.service nginx.service
+ConditionPathExists=/var/lib/netbox-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/netbox-firstboot.py --reconcile
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

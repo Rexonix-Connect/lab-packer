@@ -1,0 +1,9 @@
+[Unit]
+Description=NetBox appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+After=postgresql.service netbox.service
+ConditionPathExists=/var/lib/netbox-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/netbox-backup

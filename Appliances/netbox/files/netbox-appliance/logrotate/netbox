@@ -1,0 +1,13 @@
+/var/log/netbox/*.log {
+	weekly
+	rotate 8
+	compress
+	delaycompress
+	missingok
+	notifempty
+	# gunicorn workers and the RQ worker hold the log open for the life of
+	# the process, so truncate in place rather than rename and expect a
+	# reopen that never comes.
+	copytruncate
+	su netbox adm
+}

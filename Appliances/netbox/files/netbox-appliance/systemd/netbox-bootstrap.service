@@ -1,0 +1,20 @@
+[Unit]
+Description=NetBox appliance first-boot bootstrap
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# ovf-settings.service (from the hardened base) applies the deploy form's
+# network and identity before networking starts, and cloud-final finishes the
+# hostname and user setup, so by this point the guest knows who it is.
+After=cloud-final.service ovf-settings.service network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+Before=netbox.service netbox-rq.service nginx.service
+ConditionPathExists=!/var/lib/netbox-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/netbox-firstboot.py
+# Migrations against an external database can take a while on a slow link.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

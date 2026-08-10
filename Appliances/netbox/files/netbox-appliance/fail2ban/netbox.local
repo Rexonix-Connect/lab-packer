@@ -1,0 +1,30 @@
+# fail2ban for the NetBox appliance.
+#
+# Only two jails, both for things actually exposed: SSH, and the NetBox login
+# form. Basic-auth and bot-search jails are deliberately absent - nothing on
+# this appliance uses HTTP basic authentication, and a bot-search jail on a
+# single-application host is mostly noise.
+
+[DEFAULT]
+# ufw owns the firewall in this image. fail2ban's default iptables actions
+# would insert rules alongside ufw's own chains, where their precedence
+# depends on ordering that neither tool coordinates.
+banaction = ufw
+banaction_allports = ufw
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+# Ubuntu 24.04 has no rsyslog by default, so sshd only logs to the journal.
+backend = systemd
+
+[netbox-login]
+enabled = true
+filter = netbox-login
+port = http,https
+logpath = /var/log/nginx/netbox-access.log
+# Higher than SSH: a person mistyping a web password a few times is ordinary,
+# and locking a whole office out behind one NAT address is not the goal.
+maxretry = 10
