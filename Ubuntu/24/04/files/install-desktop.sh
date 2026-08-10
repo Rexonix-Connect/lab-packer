@@ -48,3 +48,12 @@ fi
 
 echo "> Installing the Ubuntu desktop task (${#packages[@]} packages) ..."
 apt-get install "${APT_OPTS[@]}" "${packages[@]}"
+
+# cups-browsed is the listener at the centre of the 2024 CUPS remote-code
+# chain (CVE-2024-47176 and friends): it accepts UDP announcements and can be
+# tricked into creating an attacker-controlled printer. ufw already blocks it
+# inbound; removing the daemon is defense in depth. CUPS itself stays, so
+# local and manually-added network printers keep working - only automatic
+# discovery of remote printers is lost.
+echo '> Removing cups-browsed (2024 CUPS RCE listener) ...'
+apt-get purge "${APT_OPTS[@]}" cups-browsed || true

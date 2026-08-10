@@ -23,7 +23,7 @@ for mod in algif_aead act_pedit esp4 esp6 rxrpc; do
 	fi
 done
 echo '> Verifying hardening sysctls ...'
-for kv in kernel.dmesg_restrict=1 kernel.kptr_restrict=1 kernel.yama.ptrace_scope=1 kernel.unprivileged_bpf_disabled=2 net.core.bpf_jit_harden=2 fs.protected_fifos=2 fs.protected_regular=2 kernel.io_uring_disabled=2 kernel.apparmor_restrict_unprivileged_userns=1; do
+for kv in kernel.dmesg_restrict=1 kernel.kptr_restrict=1 kernel.yama.ptrace_scope=1 kernel.unprivileged_bpf_disabled=2 net.core.bpf_jit_harden=2 fs.protected_fifos=2 fs.protected_regular=2 fs.suid_dumpable=0 kernel.io_uring_disabled=2 kernel.apparmor_restrict_unprivileged_userns=1 net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.all.accept_source_route=0 net.ipv6.conf.all.accept_redirects=0; do
 	key="${kv%%=*}"
 	want="${kv##*=}"
 	have="$(sysctl -n "${key}")"
@@ -36,6 +36,30 @@ echo '> Verifying unattended-upgrades is enabled ...'
 if ! apt-config dump APT::Periodic::Unattended-Upgrade | grep -q '"1"'; then
 	echo '> unattended-upgrades periodic run is not enabled'
 	exit 1
+fi
+echo '> Verifying snapd and open-vm-tools are fully patched ...'
+# snap-confine is setuid-root (CVE-2026-8933, USN-8579-1) and open-vm-tools
+# has had guest privilege-escalation advisories; the build already upgrades
+# both, so assert nothing newer is still pending in the local apt cache
+# rather than pinning a brittle version literal that could wrongly fail a
+# build once the archive moves on.
+for pkg in snapd open-vm-tools; do
+	installed="$(dpkg-query -W -f='${Version}' "${pkg}" 2>/dev/null || true)"
+	if [ -z "${installed}" ]; then
+		continue
+	fi
+	candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/{print $2}')"
+	if [ -n "${candidate}" ] && [ "${candidate}" != '(none)' ] && ! dpkg --compare-versions "${installed}" ge "${candidate}"; then
+		echo "> ${pkg} ${installed} is behind the available ${candidate}; upgrade before templating"
+		exit 1
+	fi
+done
+# Seeded snaps ship at ISO vintage and do not refresh until first network
+# boot; refresh them now so the snapd snap and any seeded apps ship current.
+# Best-effort: a transient snap store issue must not fail the template build.
+if command -v snap >/dev/null 2>&1; then
+	echo '> Refreshing seeded snaps ...'
+	snap refresh || echo '> snap refresh reported an issue; continuing'
 fi
 echo '> Verifying recovery account and OVF network helper ...'
 id recovery >/dev/null
