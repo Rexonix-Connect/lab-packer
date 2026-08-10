@@ -66,6 +66,8 @@ The Ubuntu 22.04 template build applies a small security baseline during autoins
 
 The deploy-form managed user is placed in `adm, cdrom, dip, plugdev, sudo` — deliberately **not** `lxd`, whose membership is documented root-equivalence and redundant next to `sudo`.
 
+`apport` is disabled (`/etc/default/apport` `enabled=0`): its boot script otherwise forces `fs.suid_dumpable=2` on every boot regardless of sysctl ([LP #1452239](https://bugs.launchpad.net/bugs/1452239)), so the `fs.suid_dumpable=0` in the sysctl baseline only holds with apport off; apport is a crash reporter with no purpose on a template.
+
 ##### Known-CVE kernel mitigations
 
 The build mitigates the 2026 Linux kernel local privilege escalation family following the Ubuntu Security Team guidance for each advisory. Every module below is blocked via `install <module> /bin/false` plus `blacklist <module>` in `/etc/modprobe.d/manual-disable-<name>.conf`, the initramfs is regenerated so the blocks apply from early boot, and the build fails if any module is not blocked or is loaded at templating time:

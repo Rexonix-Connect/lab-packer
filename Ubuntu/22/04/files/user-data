@@ -94,6 +94,11 @@ autoinstall:
           printf 'kernel.dmesg_restrict = 1\nkernel.kptr_restrict = 1\nkernel.yama.ptrace_scope = 1\nkernel.unprivileged_bpf_disabled = 2\nnet.core.bpf_jit_harden = 2\nfs.protected_fifos = 2\nfs.protected_regular = 2\nfs.suid_dumpable = 0\nnet.ipv4.conf.all.accept_redirects = 0\nnet.ipv4.conf.default.accept_redirects = 0\nnet.ipv4.conf.all.secure_redirects = 0\nnet.ipv4.conf.default.secure_redirects = 0\nnet.ipv4.conf.all.send_redirects = 0\nnet.ipv4.conf.default.send_redirects = 0\nnet.ipv4.conf.all.accept_source_route = 0\nnet.ipv4.conf.default.accept_source_route = 0\nnet.ipv4.conf.all.log_martians = 1\nnet.ipv4.conf.default.log_martians = 1\nnet.ipv4.icmp_echo_ignore_broadcasts = 1\nnet.ipv4.icmp_ignore_bogus_error_responses = 1\nnet.ipv6.conf.all.accept_redirects = 0\nnet.ipv6.conf.default.accept_redirects = 0\nnet.ipv6.conf.all.accept_source_route = 0\nnet.ipv6.conf.default.accept_source_route = 0\n' > /target/etc/sysctl.d/zz-lab-hardening.conf
         # Keep clones patching known vulnerabilities on their own.
         - printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /target/etc/apt/apt.conf.d/20auto-upgrades
+        # Disable apport: its boot script forces fs.suid_dumpable=2 on every
+        # boot (LP #1452239), overriding the sysctl above. apport is a crash
+        # reporter with no purpose on a template.
+        - printf 'enabled=0\n' > /target/etc/default/apport
+        - curtin in-target --target=/target -- bash -c 'systemctl disable --now apport.service 2>/dev/null || true'
         # modprobe.d is bundled into the initramfs, so rebuild it after the blocks.
         - curtin in-target --target=/target -- update-initramfs -u
         - >-
