@@ -14,6 +14,16 @@ on:
         type: string
         required: false
         default: 15m
+      netbox_http_check:
+        description: Check that the NetBox appliance serves HTTPS (needs the runner to reach the VM network)
+        type: boolean
+        required: false
+        default: true
+      netbox_timeout_minutes:
+        description: Minutes to wait for the NetBox appliance to finish its first-boot bootstrap
+        type: number
+        required: false
+        default: 10
 
   # Callable from the Rebuild All VM Templates orchestrator.
   workflow_call:
@@ -28,6 +38,16 @@ on:
         type: string
         required: false
         default: 15m
+      netbox_http_check:
+        description: Check that the NetBox appliance serves HTTPS (needs the runner to reach the VM network)
+        type: boolean
+        required: false
+        default: true
+      netbox_timeout_minutes:
+        description: Minutes to wait for the NetBox appliance to finish its first-boot bootstrap
+        type: number
+        required: false
+        default: 10
 
 permissions:
   contents: read
@@ -35,7 +55,10 @@ permissions:
 jobs:
   test:
     runs-on: ${{ vars.RUNNER_LABELS }}
-    timeout-minutes: 120
+    # Eight matrix entries run one after another on a single self-hosted
+    # runner, and the appliance additionally waits out its first-boot
+    # bootstrap.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +73,8 @@ jobs:
             template_var: UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME
           - name: ubuntu-24-04-server-hardened
             template_var: UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME
+          - name: netbox-appliance
+            template_var: NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME
           - name: windows-server-2019
             template_var: WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME
           - name: windows-server-2022
@@ -89,6 +114,7 @@ jobs:
             exit 1
           fi
           echo "Guest IP: ${ip}"
+          echo "GUEST_IP=${ip}" >> "$GITHUB_ENV"
           tools="$(govc object.collect -s "vm/${VM_NAME}" guest.toolsRunningStatus)"
           echo "VMware Tools status: ${tools}"
           [ "${tools}" = "guestToolsRunning" ]
@@ -114,6 +140,66 @@ jobs:
             fi
           done
           echo "All deploy form properties survived the export/deploy chain."
+
+      # The appliance's form carries NetBox fields on top of the shared eleven,
+      # and they only get there if set-vapp-descriptors.py ran with the
+      # descriptor file. A missing id means the build silently shipped a
+      # template nobody can configure at deploy time.
+      - name: Verify the NetBox deploy form properties
+        if: matrix.name == 'netbox-appliance'
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          for key in netbox.fqdn netbox.time-zone netbox.admin-username netbox.admin-email \
+                     netbox.admin-password netbox.metrics-allow netbox.tls-cert netbox.tls-key \
+                     netbox.db-host netbox.db-name netbox.db-user netbox.db-password \
+                     netbox.redis-host netbox.redis-password; do
+            if ! echo "${props}" | grep -qx "${key}"; then
+              echo "Missing NetBox deploy form property: ${key}"
+              exit 1
+            fi
+          done
+          echo "All NetBox deploy form properties are present."
+
+      # Deployed with an empty form, the appliance has to generate its own
+      # identity and serve NetBox over HTTPS unaided. This is the check that
+      # distinguishes "the VM booted" from "the appliance works".
+      - name: Verify NetBox is serving
+        if: ${{ matrix.name == 'netbox-appliance' && inputs.netbox_http_check }}
+        run: |
+          echo "Waiting up to ${{ inputs.netbox_timeout_minutes }} minutes for NetBox at https://${GUEST_IP}/ ..."
+          deadline=$(( $(date +%s) + ${{ inputs.netbox_timeout_minutes }} * 60 ))
+          code=''
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/login/" || true)"
+            [ "${code}" = '200' ] && break
+            sleep 15
+          done
+          if [ "${code}" != '200' ]; then
+            echo "NetBox did not serve its login page (last HTTP status: ${code:-none})."
+            echo "Inspect the VM console and 'journalctl -u netbox-bootstrap -b' before it is deleted."
+            exit 1
+          fi
+          echo "Login page: HTTP 200"
+
+          redirect="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://${GUEST_IP}/" || true)"
+          [ "${redirect}" = '301' ] || { echo "Plain HTTP returned ${redirect}, expected 301"; exit 1; }
+          echo "HTTP redirect: 301"
+
+          api="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/api/" || true)"
+          [ "${api}" = '403' ] || { echo "Unauthenticated /api/ returned ${api}, expected 403"; exit 1; }
+          echo "API authentication: enforced"
+
+          metrics="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/metrics" || true)"
+          [ "${metrics}" = '403' ] || { echo "/metrics returned ${metrics}; it must be denied when no allowlist was deployed"; exit 1; }
+          echo "Metrics: denied by default"
+
+          echo "Certificate generated at first boot:"
+          openssl s_client -connect "${GUEST_IP}:443" </dev/null 2>/dev/null |
+            openssl x509 -noout -subject -dates -ext subjectAltName
 
       - name: Keep the VM for inspection
         run: |
