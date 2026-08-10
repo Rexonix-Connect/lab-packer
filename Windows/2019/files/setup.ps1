@@ -10,12 +10,22 @@ if ($service.Status -ne 'Running') {
 $minimumTools = $env:MINIMUM_TOOLS_VERSION
 if ($minimumTools) {
 	Write-Output "> Verifying VMware Tools version >= $minimumTools ..."
-	$toolsVersion = (Get-ItemProperty 'HKLM:\SOFTWARE\VMware, Inc.\VMware Tools' -ErrorAction Stop).ProductVersion
-	# ProductVersion can carry a build suffix (e.g. 13.1.0.25218885); compare on
-	# the leading dotted-numeric portion only.
+	# Read the version from vmtoolsd.exe: the HKLM registry ProductVersion is
+	# not populated by every Tools release (empty on 13.x). Resolve the install
+	# directory from the registry InstallPath, falling back to the default.
+	$toolsRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\VMware, Inc.\VMware Tools' -ErrorAction SilentlyContinue).InstallPath
+	if (-not $toolsRoot) { $toolsRoot = 'C:\Program Files\VMware\VMware Tools' }
+	$vmtoolsd = Join-Path $toolsRoot 'vmtoolsd.exe'
+	if (-not (Test-Path -Path $vmtoolsd)) {
+		throw "vmtoolsd.exe not found under '$toolsRoot'; cannot determine the VMware Tools version"
+	}
+	$info = (Get-Item -Path $vmtoolsd).VersionInfo
+	$toolsVersion = if ($info.ProductVersion) { $info.ProductVersion } else { $info.FileVersion }
+	# The version string can carry a build suffix (e.g. 13.1.0.25218885 or
+	# "13.1.0 build-25218885"); compare on the leading dotted-numeric portion.
 	$match = [regex]::Match([string]$toolsVersion, '^\d+(\.\d+){1,3}')
 	if (-not $match.Success) {
-		throw "Could not parse a version from VMware Tools ProductVersion '$toolsVersion'"
+		throw "Could not parse a version from vmtoolsd.exe version '$toolsVersion'"
 	}
 	$parsed = [version]$match.Value
 	if ($parsed -lt [version]$minimumTools) {
