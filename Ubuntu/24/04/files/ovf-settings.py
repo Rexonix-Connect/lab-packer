@@ -154,7 +154,7 @@ def build_user_cfg(username, keys):
             "  default_user:",
             "    name: %s" % username,
             "    gecos: %s" % username,
-            "    groups: [adm, cdrom, dip, lxd, plugdev, sudo]",
+            "    groups: [adm, cdrom, dip, plugdev, sudo]",
             "    lock_passwd: true",
             "    shell: /bin/bash",
             "    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]",

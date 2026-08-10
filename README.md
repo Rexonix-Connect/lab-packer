@@ -61,7 +61,12 @@ The Ubuntu 22.04 template build applies a small security baseline during autoins
 - Bakes a `recovery` sudo user (password from the `RECOVERY_PASSWORD` secret) as console break-glass: because SSH password authentication is disabled, the password only works on the hypervisor console, so a clone whose first-boot configuration fails is still reachable.
 - Disables SSH password authentication during final template cleanup.
 - Enables `ufw` with default-deny inbound and SSH explicitly allowed, so every clone starts with an active firewall.
+- Asserts `snapd` and `open-vm-tools` are fully patched at build time — rather than a brittle version literal, the build fails if the local apt cache still offers a newer version, so the setuid-root `snap-confine` LPE (CVE-2026-8933, USN-8579-1) and the VMware guest-tools advisories are covered — and refreshes seeded snaps (`snap refresh`, best-effort) so the `snapd` snap and any seeded apps ship current instead of at ISO vintage.
 - Cleans apt lists, temporary files, shell histories, cloud-init logs/seeds, SSH host keys, and machine identity data before templating.
+
+The deploy-form managed user is placed in `adm, cdrom, dip, plugdev, sudo` — deliberately **not** `lxd`, whose membership is documented root-equivalence and redundant next to `sudo`.
+
+`apport` is disabled (`/etc/default/apport` `enabled=0`): its boot script otherwise forces `fs.suid_dumpable=2` on every boot regardless of sysctl ([LP #1452239](https://bugs.launchpad.net/bugs/1452239)), so the `fs.suid_dumpable=0` in the sysctl baseline only holds with apport off; apport is a crash reporter with no purpose on a template.
 
 ##### Known-CVE kernel mitigations
 
@@ -76,7 +81,7 @@ Independently of the module blocks, the build asserts that the installed kernel 
 
 Caveats: blocking `esp4`/`esp6` breaks in-guest IPsec (for example StrongSwan VPN labs), `rxrpc` breaks AFS, `act_pedit` breaks tc-pedit rules, and `algif_aead` can affect crypto-heavy workloads. To re-enable a module on a clone that needs it, delete the matching `/etc/modprobe.d/manual-disable-<name>.conf`, run `update-initramfs -u`, and reboot — the enforced kernel minimum keeps the underlying CVEs patched.
 
-The template also ships `/etc/sysctl.d/zz-lab-hardening.conf` (named to apply after Ubuntu's unnumbered `protect-links.conf`, which would otherwise reset `fs.protected_fifos` to `1`) reducing common exploitation surface (`kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`). The cleanup script verifies the live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
+The template also ships `/etc/sysctl.d/zz-lab-hardening.conf` (named to apply after Ubuntu's unnumbered `protect-links.conf`, which would otherwise reset `fs.protected_fifos` to `1`) reducing common exploitation surface. Kernel/fs keys: `kernel.dmesg_restrict=1`, `kernel.kptr_restrict=1`, `kernel.yama.ptrace_scope=1`, `kernel.unprivileged_bpf_disabled=2`, `net.core.bpf_jit_harden=2`, `fs.protected_fifos=2`, `fs.protected_regular=2`, `fs.suid_dumpable=0` (24.04 additionally sets `kernel.io_uring_disabled=2` and `kernel.apparmor_restrict_unprivileged_userns=1`, which require the 6.8 kernel). Network keys, applied to a VM that is not a router so they carry no functional cost: ICMP redirects refused and not sent (`net.ipv4.conf.{all,default}.{accept,secure,send}_redirects=0`, `net.ipv6.conf.{all,default}.accept_redirects=0`), source routing refused (`accept_source_route=0`, v4 and v6), martian logging on, and broadcast/bogus-ICMP responses ignored. The cleanup script verifies a representative subset of live values, the module blocks, and that periodic unattended upgrades are enabled, and fails the build on any mismatch.
 
 To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*` >= `5.15.0-181.191`, `modprobe -n -v <module>` resolves to `/bin/false` for each blocked module, none of them appear in `/proc/modules`, and `sysctl kernel.dmesg_restrict` reports `1`.
 
@@ -204,6 +209,7 @@ Uses the same variables and secrets as the matching server template workflow (in
 - The installed system uses NetworkManager as the netplan renderer, which is the standard desktop networking stack; `cloud-init` remains installed from the server base for clone-time growpart and vSphere customization.
 - On 24.04 desktop clones, revert `kernel.io_uring_disabled=2` from the sysctl baseline if a desktop workload needs io_uring; Ubuntu's browsers ship AppArmor profiles compatible with the user-namespace restriction.
 - The Mesa Amber legacy-GPU packages (`libgl1-amber-dri`, `libglapi-amber`) are excluded from the desktop task: on amd64 they are uninstallable next to current Mesa (`libglapi-amber` Breaks `libglapi-mesa`), and they only serve pre-OpenGL-2.1 physical GPUs — VMware guests render through `vmwgfx` on current Mesa.
+- `cups-browsed` is removed after the desktop task installs: it is the network listener at the centre of the 2024 CUPS remote-code chain (CVE-2024-47176 and related). CUPS itself stays, so local and manually-added printers keep working; only automatic discovery of remote printers is lost (and `ufw` already blocks it inbound).
 
 ### Build Ubuntu 24.04 Server Hardened VM Template
 
