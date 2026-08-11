@@ -8,9 +8,14 @@
 # Run by netbox-backup.timer nightly, or by hand before any risky change.
 set -euo pipefail
 
-BACKUP_DIR=/var/backups/netbox
+BACKUP_DIR=/srv/netbox/backups
 CONFIG=/etc/netbox/appliance.json
-NETBOX_ROOT=/opt/netbox
+# The physical path, not /opt/netbox, which is a symlink to it. Archiving the
+# real path keeps the symlink out of the tarball entirely: extracting a member
+# through a directory symlink makes tar replace that symlink with a real
+# directory unless --keep-directory-symlink is given, which would quietly
+# dismantle the /opt/netbox -> /srv/netbox arrangement during a restore.
+NETBOX_ROOT="$(readlink -f /opt/netbox)"
 RETENTION_DAYS=14
 
 # shellcheck disable=SC1091
@@ -65,7 +70,7 @@ tar --create --gzip --file="${files}" \
 	--warning=no-file-changed \
 	--directory=/ \
 	"etc/netbox/appliance.json" \
-	"opt/netbox/local_requirements.txt" \
+	"${NETBOX_ROOT#/}/local_requirements.txt" \
 	"${NETBOX_ROOT#/}/netbox/media" \
 	"${NETBOX_ROOT#/}/netbox/scripts" \
 	"${NETBOX_ROOT#/}/netbox/reports"

@@ -12,6 +12,13 @@ echo '> Stopping the appliance services ...'
 systemctl stop netbox.service netbox-rq.service nginx.service fail2ban.service || true
 systemctl stop postgresql redis-server || true
 
+echo '> Clearing build-time state from the data disk ...'
+# The data disk itself must survive: it holds NetBox, its virtual environment
+# and the migrated database, all of which ship inside the template. What must
+# not survive is anything generated during the build.
+rm -f /srv/netbox/backups/* 2>/dev/null || true
+find /srv/netbox/netbox/media -mindepth 1 -delete 2>/dev/null || true
+
 echo '> Removing the build-time NetBox configuration and TLS material ...'
 # The migrated database stays: the local cluster authenticates by peer over the
 # Unix socket, so it holds no password, and it contains no user - the superuser

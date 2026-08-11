@@ -6,6 +6,8 @@ Documentation=https://github.com/Rexonix-Connect/lab-packer
 # hostname and user setup, so by this point the guest knows who it is.
 After=cloud-final.service ovf-settings.service network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+# NetBox, its virtual environment and its database all live here.
+RequiresMountsFor=/srv/netbox
 Before=netbox.service netbox-rq.service nginx.service
 ConditionPathExists=!/var/lib/netbox-appliance/bootstrapped
 

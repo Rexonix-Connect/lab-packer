@@ -9,7 +9,7 @@
 # a differently addressed appliance.
 set -euo pipefail
 
-BACKUP_DIR=/var/backups/netbox
+BACKUP_DIR=/srv/netbox/backups
 CONFIG=/etc/netbox/appliance.json
 
 usage() {

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 echo '> Installing the operator CLIs ...'
-for tool in netbox-manage netbox-status netbox-credentials netbox-backup netbox-restore netbox-upgrade; do
+for tool in netbox-manage netbox-status netbox-credentials netbox-backup netbox-restore netbox-upgrade netbox-datadisk-grow; do
 	install -m 0755 -o root -g root "${PAYLOAD_DIR}/bin/${tool}" "/usr/local/sbin/${tool}"
 done
 # /usr/local/sbin is on root's PATH but not on an unprivileged account's; these
@@ -22,7 +22,7 @@ install -m 0644 -o root -g root \
 install -m 0644 -o root -g root \
 	"${PAYLOAD_DIR}/systemd/netbox-backup.timer" /etc/systemd/system/netbox-backup.timer
 cat >/etc/default/netbox-backup <<'EOF'
-# Days of backups to keep in /var/backups/netbox. Both the database dump and
+# Days of backups to keep in /srv/netbox/backups. Both the database dump and
 # the file archive are pruned on the same schedule.
 RETENTION_DAYS=14
 EOF
@@ -55,6 +55,16 @@ ARGS="--web.listen-address=127.0.0.1:9100"
 EOF
 systemctl disable --now prometheus-node-exporter.service
 
+echo '> Wiring the data disk into the boot order ...'
+# Grows /srv/netbox to fill its disk on every boot, and keeps PostgreSQL from
+# starting before that filesystem is mounted.
+install -m 0644 -o root -g root \
+	"${PAYLOAD_DIR}/systemd/netbox-datadisk.service" /etc/systemd/system/netbox-datadisk.service
+install -d -m 0755 /etc/systemd/system/postgresql@.service.d
+install -m 0644 -o root -g root \
+	"${PAYLOAD_DIR}/systemd/postgresql-datadisk.conf" \
+	/etc/systemd/system/postgresql@.service.d/10-netbox-datadisk.conf
+
 systemctl daemon-reload
-systemctl enable netbox-backup.timer
+systemctl enable netbox-backup.timer netbox-datadisk.service
 echo '> Operations tooling installed.'

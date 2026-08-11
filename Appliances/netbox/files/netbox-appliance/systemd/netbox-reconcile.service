@@ -8,6 +8,7 @@ Documentation=https://github.com/Rexonix-Connect/lab-packer
 # database and the superuser are never touched.
 After=cloud-final.service ovf-settings.service network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+RequiresMountsFor=/srv/netbox
 Before=netbox.service netbox-rq.service nginx.service
 ConditionPathExists=/var/lib/netbox-appliance/bootstrapped
 

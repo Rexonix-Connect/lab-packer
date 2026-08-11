@@ -32,7 +32,12 @@ on:
         description: Memory in MB for the appliance template
         type: number
         required: false
-        default: 8192
+        default: 16384
+      data_disk_gb:
+        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        type: number
+        required: false
+        default: 150
 
   # Callable from the Rebuild All VM Templates orchestrator.
   workflow_call:
@@ -61,7 +66,12 @@ on:
         description: Memory in MB for the appliance template
         type: number
         required: false
-        default: 8192
+        default: 16384
+      data_disk_gb:
+        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        type: number
+        required: false
+        default: 150
 
 permissions:
   contents: read
@@ -82,6 +92,7 @@ jobs:
       PKR_VAR_sshTimeout: ${{ inputs.ssh_timeout }}
       PKR_VAR_cpuCount: ${{ inputs.cpu_count }}
       PKR_VAR_memoryMb: ${{ inputs.memory_mb }}
+      PKR_VAR_dataDiskGb: ${{ inputs.data_disk_gb }}
       # Re-asserted on the clone; it has to match the base template or the
       # cloned VM will not boot.
       PKR_VAR_firmware: ${{ inputs.firmware }}

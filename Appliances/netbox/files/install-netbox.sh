@@ -10,8 +10,18 @@
 # bootstrap writes afresh per deployment.
 set -euo pipefail
 
+# NetBox lives on the data disk and is reached through /opt/netbox, the path
+# upstream's systemd units, gunicorn configuration and the nginx static alias
+# all hardcode. Everything in this image keeps referring to /opt/netbox; only
+# the two lines below know where it physically is.
+DATA_ROOT=/srv/netbox
 NETBOX_ROOT=/opt/netbox
+BACKUP_DIR="${DATA_ROOT}/backups"
 CONFIG_DIR=/etc/netbox
+
+# install-datadisk.sh runs first and must have mounted it; without that this
+# would install NetBox onto the root disk the split exists to protect.
+findmnt --noheadings --mountpoint "${DATA_ROOT}" >/dev/null
 
 echo "> Creating the netbox service account and directories ..."
 if ! id netbox >/dev/null 2>&1; then
@@ -19,15 +29,39 @@ if ! id netbox >/dev/null 2>&1; then
 fi
 install -d -m 0750 -o root -g netbox "${CONFIG_DIR}"
 install -d -m 0750 -o netbox -g adm /var/log/netbox
-install -d -m 0700 -o root -g root /var/backups/netbox
 install -d -m 0755 -o root -g root /var/lib/netbox-appliance
+# Backups belong with the data they protect, and they are the other thing that
+# grows without bound. /var/backups/netbox stays as a symlink so the documented
+# path keeps working.
+install -d -m 0700 -o root -g root "${BACKUP_DIR}"
+if [ ! -L /var/backups/netbox ]; then
+	rm -rf /var/backups/netbox
+	ln -s "${BACKUP_DIR}" /var/backups/netbox
+fi
+
+echo "> Pointing ${NETBOX_ROOT} at ${DATA_ROOT} ..."
+if [ ! -L "${NETBOX_ROOT}" ]; then
+	if [ -e "${NETBOX_ROOT}" ]; then
+		echo "> ${NETBOX_ROOT} exists and is not a symlink; refusing to replace it"
+		exit 1
+	fi
+	ln -s "${DATA_ROOT}" "${NETBOX_ROOT}"
+fi
+if [ "$(readlink -f "${NETBOX_ROOT}")" != "${DATA_ROOT}" ]; then
+	echo "> ${NETBOX_ROOT} does not resolve to ${DATA_ROOT}"
+	exit 1
+fi
 
 echo "> Cloning NetBox ${NETBOX_VERSION} ..."
-# A full clone (not --depth 1) so netbox-upgrade can check out any other
-# release later without re-fetching the whole history first.
-if [ ! -d "${NETBOX_ROOT}/.git" ]; then
-	git clone --quiet "${NETBOX_REPO_URL}" "${NETBOX_ROOT}"
+# init+fetch rather than `git clone`, because the mount point is not empty
+# (ext4 puts lost+found there) and clone refuses a non-empty target. Full
+# history, not --depth 1, so netbox-upgrade can check out any other release
+# later without re-fetching everything first.
+if [ ! -d "${DATA_ROOT}/.git" ]; then
+	git init --quiet --initial-branch=main "${DATA_ROOT}"
+	git -C "${DATA_ROOT}" remote add origin "${NETBOX_REPO_URL}"
 fi
+git -C "${DATA_ROOT}" fetch --quiet --tags origin
 git -C "${NETBOX_ROOT}" checkout --quiet "tags/${NETBOX_VERSION}"
 checked_out="$(git -C "${NETBOX_ROOT}" describe --tags --exact-match)"
 if [ "${checked_out}" != "${NETBOX_VERSION}" ]; then
@@ -64,7 +98,24 @@ echo "> Preparing the local PostgreSQL database ..."
 pg_version="$(pg_lsclusters -h | awk 'NR==1{print $1}')"
 pg_cluster="$(pg_lsclusters -h | awk 'NR==1{print $2}')"
 pg_conf_dir="/etc/postgresql/${pg_version}/${pg_cluster}"
+pg_data="${DATA_ROOT}/postgresql/${pg_version}/${pg_cluster}"
+
+# The database is the fastest-growing thing on the appliance, so its data
+# directory belongs on the data disk. The configuration stays in
+# /etc/postgresql, so the peer-authentication edits below are unaffected.
+if [ "$(pg_lsclusters -h | awk 'NR==1{print $6}')" != "${pg_data}" ]; then
+	echo "> Recreating cluster ${pg_version}/${pg_cluster} at ${pg_data} ..."
+	install -d -m 0755 -o postgres -g postgres "${DATA_ROOT}/postgresql"
+	pg_dropcluster --stop "${pg_version}" "${pg_cluster}"
+	# Encoding and locale are pinned rather than inherited from the image:
+	# NetBox's documentation warns explicitly that a SQL_ASCII cluster leads
+	# to "unpredictable and unrecoverable errors", and the base image's locale
+	# is not guaranteed to be a UTF-8 one.
+	pg_createcluster --locale=C.UTF-8 --encoding=UTF8 \
+		--datadir="${pg_data}" "${pg_version}" "${pg_cluster}" --start
+fi
 systemctl start postgresql
+[ "$(pg_lsclusters -h | awk 'NR==1{print $6}')" = "${pg_data}" ]
 
 # Peer authentication matches the connecting OS user against the database role.
 # NetBox runs as netbox and matches directly; root has to be mapped, because

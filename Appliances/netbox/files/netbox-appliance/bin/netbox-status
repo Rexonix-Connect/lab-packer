@@ -42,7 +42,7 @@ for unit in "${UNITS[@]}"; do
 done
 printf '\n'
 
-latest="$(ls -1t /var/backups/netbox/*.dump 2>/dev/null | head -n 1 || true)"
+latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
 if [ -n "${latest}" ]; then
 	echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"
 else

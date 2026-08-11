@@ -15,6 +15,23 @@ build {
     datastore = "${var.datastoreName}"
   }
 
+  # The data disk cannot be declared in the source block - the plugin rejects a
+  # storage block for an OVF-backed content library source - so it is attached
+  # through the vCenter API while the build VM is running, before anything in
+  # the guest needs it.
+  provisioner "shell-local" {
+    environment_vars = [
+      "VCENTER_SERVER=${var.vCenterServer}",
+      "VCENTER_USERNAME=${var.vCenterUsername}",
+      "VCENTER_PASSWORD=${var.vCenterPassword}",
+      "VCENTER_INSECURE=${var.vCenterInsecureConnection}",
+      "VCENTER_DATACENTER=${var.vCenterDatacenterName}",
+      "VM_NAME=${var.vmName}",
+      "DISK_SIZE_GB=${var.dataDiskGb}",
+    ]
+    command = "python3 ../../shared/scripts/add-vm-disk.py"
+  }
+
   provisioner "file" {
     source      = "./files/finalize.sh"
     destination = "/tmp/packer-finalize-template.sh"
@@ -43,6 +60,7 @@ build {
     ]
     scripts = [
       "./files/wait-for-base.sh",
+      "./files/install-datadisk.sh",
       "./files/install-packages.sh",
       "./files/install-netbox.sh",
       "./files/install-nginx.sh",

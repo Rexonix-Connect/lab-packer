@@ -77,12 +77,48 @@ for unit in netbox netbox-rq; do
 	fi
 done
 
+echo '> Verifying the data disk layout ...'
+# The whole point of the separate disk is that NetBox growth cannot fill the
+# 60 GB root, so assert every part of that actually landed on it.
+findmnt --noheadings --mountpoint /srv/netbox
+if [ "$(readlink -f /opt/netbox)" != '/srv/netbox' ]; then
+	echo "> /opt/netbox resolves to $(readlink -f /opt/netbox), expected /srv/netbox"
+	exit 1
+fi
+for path in /srv/netbox/venv/bin/python /srv/netbox/netbox/manage.py /srv/netbox/backups; do
+	if [ ! -e "${path}" ]; then
+		echo "> ${path} is missing; NetBox did not install onto the data disk"
+		exit 1
+	fi
+done
+pg_data="$(runuser -u postgres -- psql -tAc 'SHOW data_directory')"
+case "${pg_data}" in
+/srv/netbox/*) echo "> PostgreSQL data directory: ${pg_data}" ;;
+*)
+	echo "> PostgreSQL data directory is ${pg_data}, expected it under /srv/netbox"
+	exit 1
+	;;
+esac
+pg_encoding="$(runuser -u postgres -- psql -tAc "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname='netbox'")"
+if [ "${pg_encoding}" != 'UTF8' ]; then
+	echo "> the netbox database is ${pg_encoding}, expected UTF8"
+	exit 1
+fi
+# fstab must reference the filesystem by UUID: device names are not stable
+# across clones, and a wrong entry would silently leave NetBox on the root disk.
+if ! grep -qE '^UUID=[0-9a-fA-F-]+[[:space:]]+/srv/netbox[[:space:]]+ext4' /etc/fstab; then
+	echo '> /etc/fstab has no UUID-based entry for /srv/netbox:'
+	grep -n 'srv/netbox' /etc/fstab || true
+	exit 1
+fi
+echo "> Data disk: $(findmnt -no SOURCE,SIZE,USED --mountpoint /srv/netbox)"
+
 echo '> Verifying the firewall and enabled units ...'
 ufw status | grep -qE '^80/tcp +ALLOW'
 ufw status | grep -qE '^443/tcp +ALLOW'
 for unit in netbox.service netbox-rq.service nginx.service postgresql.service \
 	redis-server.service fail2ban.service netbox-bootstrap.service \
-	netbox-reconcile.service netbox-backup.timer; do
+	netbox-reconcile.service netbox-backup.timer netbox-datadisk.service; do
 	systemctl is-enabled "${unit}" >/dev/null
 done
 if systemctl is-enabled prometheus-node-exporter.service >/dev/null 2>&1; then

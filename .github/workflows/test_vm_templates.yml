@@ -164,6 +164,28 @@ jobs:
           done
           echo "All NetBox deploy form properties are present."
 
+      # NetBox, its database and its backups live on a second disk so that
+      # their growth cannot fill the 60 GB root. That disk is attached through
+      # the vCenter API rather than declared in the Packer source, so it is
+      # worth confirming it survived the export and deploy.
+      - name: Verify the appliance data disk
+        if: matrix.name == 'netbox-appliance'
+        run: |
+          govc device.info -vm "${VM_NAME}" -json 'disk-*' | python3 -c '
+          import json, sys
+          disks = sorted(
+              (d["capacityInKB"] // (1024 * 1024), d["deviceInfo"]["label"])
+              for d in json.load(sys.stdin)["devices"])
+          for size, label in disks:
+              print("%s: %d GB" % (label, size))
+          if len(disks) != 2:
+              sys.exit("expected 2 disks (60 GB root + data disk), found %d" % len(disks))
+          if disks[0][0] < 50:
+              sys.exit("smallest disk is %d GB; the root disk should be 60 GB" % disks[0][0])
+          if disks[1][0] < 50:
+              sys.exit("data disk is only %d GB" % disks[1][0])
+          print("Root and data disks both present.")'
+
       # Deployed with an empty form, the appliance has to generate its own
       # identity and serve NetBox over HTTPS unaided. This is the check that
       # distinguishes "the VM booted" from "the appliance works".

@@ -1,0 +1,19 @@
+[Unit]
+Description=Grow the NetBox data filesystem to fill its disk
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# The filesystem is made on the whole device with no partition table, so
+# enlarging the virtual disk in the deploy wizard leaves nothing to do but
+# resize2fs - no partition table to extend first. Online growth of a mounted
+# ext4 is safe, and resize2fs is a no-op once the filesystem already spans the
+# device, so this can run on every boot.
+RequiresMountsFor=/srv/netbox
+Before=postgresql.service netbox-bootstrap.service netbox-reconcile.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/netbox-datadisk-grow
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

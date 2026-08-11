@@ -106,7 +106,25 @@ variable "cpuCount" {
 
 variable "memoryMb" {
   type    = number
-  default = 8192
+  default = 16384
+}
+
+# Separate thin disk mounted at /srv/netbox, holding the NetBox installation,
+# the PostgreSQL cluster and the backups, so the 60 GB root inherited from the
+# hardened base cannot be filled by NetBox's own growth.
+#
+# It cannot be declared in the source block: packer-plugin-vsphere rejects a
+# storage block outright for an OVF-backed content library source ("'storage'
+# cannot be used with OVF content library items"), so the build attaches it
+# through the vCenter API instead - see shared/scripts/add-vm-disk.py.
+variable "dataDiskGb" {
+  type    = number
+  default = 150
+
+  validation {
+    condition     = var.dataDiskGb >= 50
+    error_message = "The dataDiskGb variable must be at least 50 GB; below that the separate data disk is not worth the split."
+  }
 }
 
 # Re-asserted on the clone so the appliance keeps the base's Secure Boot

@@ -249,7 +249,7 @@ This is the first image in the repository that is **not** installed from an ISO.
 
 Cloning the hardened image poses one problem worth knowing about: it has no account to log in as, by design (it deletes its provisioning user, disables SSH password authentication and strips its host keys). The build therefore attaches a NoCloud `CIDATA` CD that creates a throwaway, key-only `pkrbuild` account, authorized by an ed25519 key pair the workflow generates per run and shreds afterwards. `finalize.sh` deletes the account, and the CD is detached before the export, so nothing of it reaches the template.
 
-What is **baked into the template**: the OS packages, NetBox at the pinned tag in `/opt/netbox` (a full git clone, so `netbox-upgrade` works later), the virtual environment with its pinned requirements, the collected static files, the bundled documentation, **and the already-migrated local database**. What is **generated per deployment**, on first boot: `SECRET_KEY`, the API token pepper, `ALLOWED_HOSTS`, the time zone, the TLS certificate, the superuser and the metrics allowlist.
+What is **baked into the template**: the OS packages, NetBox at the pinned tag on the data disk at `/srv/netbox`, reached through `/opt/netbox` (a full git history, so `netbox-upgrade` works later), the virtual environment with its pinned requirements, the collected static files, the bundled documentation, **and the already-migrated local database**. What is **generated per deployment**, on first boot: `SECRET_KEY`, the API token pepper, `ALLOWED_HOSTS`, the time zone, the TLS certificate, the superuser and the metrics allowlist.
 
 Shipping a migrated database is safe here specifically because the local cluster authenticates by **peer over the Unix socket**, so the appliance has no database password to generate, bake, rotate or leak, and the template contains no user account — the superuser is created at deploy time. It buys a first boot of well under a minute and a template that bootstraps without reaching the network.
 
@@ -260,9 +260,25 @@ The build refuses to produce a template that does not work: `verify.sh` starts t
 - `netbox_version` - NetBox release tag to install; defaults to `v4.6.7`, validated against `vX.Y.Z`
 - `ssh_timeout` - Packer SSH wait timeout; defaults to `45m`
 - `firmware` - re-asserted on the clone so Secure Boot survives the export; **must match the firmware the hardened template was built with**, or the clone will not boot
-- `cpu_count` / `memory_mb` - appliance sizing; default to `4` vCPU and `8192` MB, since the OS templates' 2/4096 is below what NetBox plus PostgreSQL needs
+- `cpu_count` / `memory_mb` - appliance sizing; default to `4` vCPU and `16384` MB, since the OS templates' 2/4096 is below what NetBox plus PostgreSQL needs
+- `data_disk_gb` - size of the separate `/srv/netbox` data disk, minimum `50`; defaults to `150`
 
-There is deliberately no `disk_size_gb` input: the vSphere plugin does not honour disk resizing for an OVF-backed content library source, so the appliance inherits the base's 60 GB root disk. Enlarge the disk in the deploy wizard instead — the base image's `growpart`/`resize_rootfs` grow the root filesystem on first boot.
+#### Disk layout
+
+The appliance ships **two** disks:
+
+| Mount | Size | Contents |
+| --- | --- | --- |
+| `/` | 60 GB (inherited) | The hardened base operating system |
+| `/srv/netbox` | `data_disk_gb`, thin | NetBox and its virtual environment, the PostgreSQL cluster data directory, uploaded media, and `/srv/netbox/backups` |
+
+The split exists so that the things which grow without bound — the database, media uploads and nightly backups — cannot fill the root filesystem. NetBox is installed at `/srv/netbox` with **`/opt/netbox` left as a symlink to it**, so upstream's systemd units, `gunicorn.py` and the nginx `alias` keep working against the path they hardcode; `upgrade.sh` derives its virtual environment from `pwd -P`, so the venv is created at the physical path either way. `/var/backups/netbox` is likewise a symlink to `/srv/netbox/backups`.
+
+There is deliberately no `disk_size_gb` input for the **root** disk: the vSphere plugin does not honour disk resizing for an OVF-backed content library source, so the root comes across at the base's 60 GB. Enlarge it in the deploy wizard if you need to — the base image's `growpart`/`resize_rootfs` grow the root filesystem on first boot.
+
+The data disk cannot be declared in the Packer source either, and for a blunter reason: `packer-plugin-vsphere` **rejects** a `storage` block outright for an OVF-backed content library item (`'storage' cannot be used with OVF content library items`). The build therefore attaches it through the vCenter API with `shared/scripts/add-vm-disk.py`, a `shell-local` provisioner that hot-adds a thin disk at SCSI 0:1 — a fixed unit number, so the guest can find it deterministically at `/dev/disk/by-path/*-scsi-*:0:1:0` rather than guessing at device names.
+
+The filesystem is ext4 made on the **whole device, with no partition table**, and mounted from `/etc/fstab` by UUID with `nofail,nodev,nosuid`. That makes growing it a single `resize2fs` with no partition table to extend first: enlarge disk 2 in the deploy wizard and `netbox-datadisk.service` grows the filesystem on the next boot, with no manual step. `nofail` keeps a missing disk from dropping the VM into emergency mode, while `RequiresMountsFor=/srv/netbox` on the NetBox, nginx, bootstrap and PostgreSQL units means a missing disk leaves the appliance visibly down instead of quietly running on the root filesystem.
 
 Requirements: the same vCenter variables and secrets as the other builds, plus `NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the **source** it clones. No ISO path, no `PACKER_VM_PASSWORD` and no `RECOVERY_PASSWORD` are needed — this build introduces no new secrets.
 
@@ -348,12 +364,12 @@ All of them need root and live in `/usr/local/sbin`:
 | --- | --- |
 | `netbox-status` | Version, URL, database mode, TLS mode, service health, last backup. Also drives the MOTD |
 | `netbox-manage …` | Any NetBox management command inside the venv, as the `netbox` account (`netbox-manage nbshell`, `netbox-manage housekeeping`, `netbox-manage changepassword`) |
-| `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/var/backups/netbox`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |
+| `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/srv/netbox/backups`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |
 | `netbox-restore <timestamp>` | Restores a backup pair, applies any pending migrations, restarts and health-checks. Confirm-prompted |
 | `netbox-upgrade <vX.Y.Z>` | Backs up, checks out the tag, runs `upgrade.sh`, restarts, health-checks, prints the rollback command. `--reinstall` rebuilds the venv at the current tag after editing `local_requirements.txt` |
 | `netbox-credentials` | Print or `--clear` the generated credentials and the console banner |
 
-Backups contain `SECRET_KEY` and the API token pepper, so `/var/backups/netbox` is `0700 root` and the archives are `0600`. That is deliberate: without them a restored database's API tokens and sessions cannot be validated.
+Backups contain `SECRET_KEY` and the API token pepper, so `/srv/netbox/backups` is `0700 root` and the archives are `0600`. That is deliberate: without them a restored database's API tokens and sessions cannot be validated. They archive **physical** `/srv/netbox/...` paths rather than `/opt/netbox/...`: extracting a member through a directory symlink makes `tar` replace that symlink with a real directory unless `--keep-directory-symlink` is given, which would quietly dismantle the `/opt/netbox` arrangement during a restore. Note also that backups living on the same disk as the data they protect are a convenience, not an off-box backup strategy.
 
 NetBox's **housekeeping needs no cron entry** on this appliance. Since NetBox v4.4 it is a built-in daily system job executed by `netbox-rq`, so adding a timer would only run it twice; `netbox-manage housekeeping` still runs it on demand.
 
