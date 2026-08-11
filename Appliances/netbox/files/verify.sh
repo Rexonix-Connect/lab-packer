@@ -27,7 +27,10 @@ systemctl restart nginx
 echo '> Waiting for NetBox to answer ...'
 code=''
 for _ in $(seq 1 60); do
-	code="$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ || true)"
+	# --max-time so a connection that hangs rather than refuses cannot stall
+	# the whole poll; curl prints 000 on failure and exits non-zero, and the
+	# 000 is the informative part, so the exit status is discarded.
+	code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ || true)"
 	[ "${code}" = '200' ] && break
 	sleep 5
 done
@@ -37,7 +40,7 @@ if [ "${code}" != '200' ]; then
 	# proxies to it, so asking each in turn separates "NetBox is down" from
 	# "nginx is not serving it" without having to read two service logs to
 	# work it out.
-	echo "> Direct to gunicorn (127.0.0.1:8001): $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/login/ || echo 'no answer')"
+	echo "> Direct to gunicorn (127.0.0.1:8001): $(curl -s --max-time 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/login/ || true)"
 	echo '> Listening sockets:'
 	ss -ltnp || true
 	echo '> nginx error log:'

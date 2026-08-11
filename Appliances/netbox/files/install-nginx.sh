@@ -42,7 +42,7 @@ systemctl enable nginx.service
 systemctl restart nginx.service
 # Assert the listener actually exists, rather than trusting that a restart of
 # an already-running daemon picked the new configuration up.
-if ! ss -ltn 'sport = :443' | grep -q ':443'; then
+if [ -z "$(ss -H -ltn 'sport = :443')" ]; then
 	echo '> nginx is not listening on 443 after restart'
 	systemctl --no-pager --full status nginx.service || true
 	exit 1
