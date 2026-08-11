@@ -62,8 +62,13 @@ build {
       "./files/wait-for-base.sh",
       "./files/install-datadisk.sh",
       "./files/install-packages.sh",
-      "./files/install-netbox.sh",
+      # Before install-netbox.sh on purpose. This step ends in `nginx -t`, and
+      # installing NetBox takes ten minutes or so, so validating the web server
+      # configuration first turns a bad directive into a four-minute failure
+      # rather than a fourteen-minute one. It has no dependency on NetBox being
+      # installed: nginx does not check that an alias target exists.
       "./files/install-nginx.sh",
+      "./files/install-netbox.sh",
       "./files/install-ops.sh",
       "./files/install-firstboot.sh",
     ]
