@@ -21,6 +21,11 @@ permissions:
 
 # Rebuilds all templates in sequence by calling the individual build
 # workflows; on a single self-hosted runner expect several hours end to end.
+# The NetBox appliance is cloned from the hardened template rather than built
+# from an ISO, so it runs directly after it. With continue_on_failure it will
+# still run after a failed hardened build - it then clones the previous
+# hardened library item, which is deliberate: an appliance built on the last
+# known-good base beats no appliance at all.
 jobs:
   ubuntu-22-04-server:
     uses: ./.github/workflows/build_ubuntu_22_04_server_vm_template.yml
@@ -50,9 +55,16 @@ jobs:
     uses: ./.github/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml
     secrets: inherit
 
-  windows-2019:
+  # Clones the hardened library item, so it has to follow that build.
+  netbox-appliance:
     needs: ubuntu-24-04-server-hardened
     if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result == 'success') }}
+    uses: ./.github/workflows/build_netbox_appliance_vm_template.yml
+    secrets: inherit
+
+  windows-2019:
+    needs: netbox-appliance
+    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.netbox-appliance.result == 'success') }}
     uses: ./.github/workflows/build_windows_server_2019_vm_template.yml
     secrets: inherit
 

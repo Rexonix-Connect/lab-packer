@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly NetBox appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# Spreads the load when several appliances share a datastore, and stops a
+# fleet cloned from one template from dumping at the same second.
+RandomizedDelaySec=1h
+# Runs after the fact if the appliance was powered off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

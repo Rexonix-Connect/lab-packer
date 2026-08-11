@@ -1,0 +1,221 @@
+
+name: Build NetBox Appliance VM Template
+
+on:
+  workflow_dispatch:
+    inputs:
+      netbox_version:
+        description: NetBox release tag to install (for example v4.6.7)
+        type: string
+        required: false
+        default: v4.6.7
+      ssh_timeout:
+        description: Packer SSH wait timeout (for example 45m or 1h)
+        type: string
+        required: false
+        default: 45m
+      firmware:
+        description: VM firmware - must match the firmware the hardened base template was built with
+        type: choice
+        required: false
+        default: efi-secure
+        options:
+          - efi-secure
+          - efi
+          - bios
+      cpu_count:
+        description: vCPUs for the appliance template
+        type: number
+        required: false
+        default: 4
+      memory_mb:
+        description: Memory in MB for the appliance template
+        type: number
+        required: false
+        default: 16384
+      data_disk_gb:
+        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        type: number
+        required: false
+        default: 150
+
+  # Callable from the Rebuild All VM Templates orchestrator.
+  workflow_call:
+    inputs:
+      netbox_version:
+        description: NetBox release tag to install (for example v4.6.7)
+        type: string
+        required: false
+        default: v4.6.7
+      ssh_timeout:
+        description: Packer SSH wait timeout (for example 45m or 1h)
+        type: string
+        required: false
+        default: 45m
+      firmware:
+        description: VM firmware - must match the firmware the hardened base template was built with
+        type: string
+        required: false
+        default: efi-secure
+      cpu_count:
+        description: vCPUs for the appliance template
+        type: number
+        required: false
+        default: 4
+      memory_mb:
+        description: Memory in MB for the appliance template
+        type: number
+        required: false
+        default: 16384
+      data_disk_gb:
+        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        type: number
+        required: false
+        default: 150
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  packer:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
+    env:
+      PKR_VAR_vCenterServer: ${{ secrets.VCENTER_HOST }}
+      PKR_VAR_vCenterUsername: ${{ secrets.VCENTER_USER }}
+      PKR_VAR_vCenterPassword: ${{ secrets.VCENTER_PASS }}
+      PKR_VAR_vCenterInsecureConnection: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      PKR_VAR_vCenterDatacenterName: ${{ vars.VCENTER_DATACENTER_NAME }}
+      PKR_VAR_clusterName: ${{ vars.VCENTER_CLUSTER_NAME }}
+      PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
+      PKR_VAR_sshTimeout: ${{ inputs.ssh_timeout }}
+      PKR_VAR_cpuCount: ${{ inputs.cpu_count }}
+      PKR_VAR_memoryMb: ${{ inputs.memory_mb }}
+      PKR_VAR_dataDiskGb: ${{ inputs.data_disk_gb }}
+      # Re-asserted on the clone; it has to match the base template or the
+      # cloned VM will not boot.
+      PKR_VAR_firmware: ${{ inputs.firmware }}
+      # This build clones the published hardened image instead of installing
+      # from an ISO, so it consumes that template's name rather than an ISO
+      # path. Run the hardened build first if its library item is stale.
+      PKR_VAR_sourceTemplateName: ${{ vars.UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_templateName: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_netboxVersion: ${{ inputs.netbox_version }}
+      PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+      PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
+      PKR_VAR_vmName: "netbox-appliance-temp"
+      PKR_VAR_vmFolder: "/"
+      PKR_VAR_buildUsername: "pkrbuild"
+      PACKER_LOG: 1
+    steps:
+      - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # The hardened base has no account to log into: it deletes its own
+      # provisioning user, disables SSH password authentication and strips its
+      # host keys. The build seeds a throwaway account through cloud-init and
+      # authorizes this key pair, which is generated per run, never leaves the
+      # runner, and authorizes an account finalize.sh deletes.
+      - name: Generate ephemeral build SSH key
+        id: buildkey
+        run: |
+          install -d -m 700 "${RUNNER_TEMP}/netbox-build"
+          rm -f "${RUNNER_TEMP}/netbox-build/id_ed25519" "${RUNNER_TEMP}/netbox-build/id_ed25519.pub"
+          ssh-keygen -q -t ed25519 -N '' -C packer-netbox-build -f "${RUNNER_TEMP}/netbox-build/id_ed25519"
+          {
+            echo "public_key=$(cat "${RUNNER_TEMP}/netbox-build/id_ed25519.pub")"
+            echo "private_key_file=${RUNNER_TEMP}/netbox-build/id_ed25519"
+          } >> $GITHUB_OUTPUT
+
+      # The descriptor table is shared with the five OS templates, and an
+      # extension that leaked into their form would only be noticed in a
+      # deploy wizard. Assert both shapes before spending a build.
+      - name: Verify the shared deploy form
+        run: |
+          python3 - <<'PY'
+          import importlib.util, os, sys, types
+
+          # pyVmomi is imported at module scope but unused for this check.
+          for name in ('pyVim', 'pyVim.connect', 'pyVim.task', 'pyVmomi'):
+              sys.modules.setdefault(name, types.ModuleType(name))
+          sys.modules['pyVim.connect'].SmartConnect = None
+          sys.modules['pyVim.connect'].Disconnect = None
+          sys.modules['pyVim.task'].WaitForTask = None
+          sys.modules['pyVmomi'].vim = None
+
+          BASE = ['hostname', 'username', 'password', 'public-keys',
+                  'network.ip4', 'network.gw4', 'network.ip6', 'network.gw6',
+                  'network.dns', 'network.domain', 'user-data']
+
+          def load():
+              spec = importlib.util.spec_from_file_location(
+                  'd', 'shared/scripts/set-vapp-descriptors.py')
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return [d.id for d in module.DESCRIPTORS]
+
+          os.environ.pop('VAPP_EXTRA_DESCRIPTORS', None)
+          ids = load()
+          assert ids == BASE, 'OS templates would get a changed form: %s' % ids
+
+          os.environ['VAPP_EXTRA_DESCRIPTORS'] = 'shared/vapp-descriptors/netbox.json'
+          ids = load()
+          assert len([i for i in ids if i.startswith('netbox.')]) == 14, ids
+          assert ids[-1] == 'user-data', ids
+          assert [i for i in ids if i in BASE] == BASE, ids
+          print('deploy form: %d properties for the appliance, %d for the OS'
+                ' templates' % (len(ids), len(BASE)))
+          PY
+
+      - name: Packer init
+        run: |
+          packer init ./shared/config.pkr.hcl
+
+      - name: Packer fmt
+        run: |
+          packer fmt -check ./shared/config.pkr.hcl
+          packer fmt -check ./Appliances/netbox
+
+      - name: Packer validate
+        env:
+          PKR_VAR_buildPublicKey: ${{ steps.buildkey.outputs.public_key }}
+          PKR_VAR_buildPrivateKeyFile: ${{ steps.buildkey.outputs.private_key_file }}
+        run: |
+          cd Appliances/netbox
+          packer validate -only='vsphere-clone.base' .
+
+      - name: Packer build
+        env:
+          PKR_VAR_buildPublicKey: ${{ steps.buildkey.outputs.public_key }}
+          PKR_VAR_buildPrivateKeyFile: ${{ steps.buildkey.outputs.private_key_file }}
+        run: |
+          cd Appliances/netbox
+          packer build -timestamp-ui -force -only='vsphere-clone.base' .
+
+      # The vCenter OVF export scrambles vApp property order and the deploy
+      # wizard renders document order, so rewrite the exported descriptor
+      # into the canonical form order.
+      - name: Normalize deploy form in the library item
+        env:
+          VCENTER_SERVER: ${{ secrets.VCENTER_HOST }}
+          VCENTER_USERNAME: ${{ secrets.VCENTER_USER }}
+          VCENTER_PASSWORD: ${{ secrets.VCENTER_PASS }}
+          VCENTER_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+          LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          TEMPLATE_NAME: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+          # The appliance's deploy form carries NetBox properties on top of the
+          # eleven every template has. Without this the normalizer would not
+          # recognize them and would sort them into an "Other" category. The
+          # path is relative to the repository root, which is this step's
+          # working directory; the pre-export descriptor step sets its own
+          # value, relative to the Packer build directory.
+          VAPP_EXTRA_DESCRIPTORS: shared/vapp-descriptors/netbox.json
+        run: |
+          python3 shared/scripts/normalize-library-ovf.py
+
+      - name: Remove the ephemeral build SSH key
+        if: always()
+        run: |
+          rm -rf "${RUNNER_TEMP}/netbox-build"

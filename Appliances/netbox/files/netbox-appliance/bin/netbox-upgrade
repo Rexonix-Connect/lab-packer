@@ -1,0 +1,97 @@
+#!/bin/bash
+# Move a deployed appliance to another NetBox release, or reinstall the
+# current one after editing local_requirements.txt.
+#
+# A backup is taken first, unconditionally: upgrade.sh applies migrations, and
+# NetBox migrations are not reversible. The template itself is not upgraded by
+# this - rebuild the image with a new netbox_version input for that.
+set -euo pipefail
+
+NETBOX_ROOT=/opt/netbox
+
+usage() {
+	echo "usage: netbox-upgrade <vX.Y.Z> | --reinstall [--yes]"
+	echo
+	echo "  vX.Y.Z       check out that NetBox release tag and upgrade"
+	echo "  --reinstall  rebuild the virtual environment at the current tag,"
+	echo "               picking up changes to local_requirements.txt"
+	echo
+	echo "Current release: $(git -C "${NETBOX_ROOT}" describe --tags --always 2>/dev/null || echo unknown)"
+}
+
+case "${1:-}" in
+-h | --help)
+	usage
+	exit 0
+	;;
+'')
+	usage >&2
+	exit 2
+	;;
+esac
+
+current="$(git -C "${NETBOX_ROOT}" describe --tags --always)"
+target="${1}"
+assume_yes="${2:-}"
+
+if [ "${target}" != '--reinstall' ]; then
+	case "${target}" in
+	v[0-9]*.[0-9]*.[0-9]*) ;;
+	*)
+		echo "netbox-upgrade: '${target}' is not a release tag such as v4.6.7" >&2
+		exit 2
+		;;
+	esac
+	echo "netbox-upgrade: fetching release tags ..."
+	git -C "${NETBOX_ROOT}" fetch --tags --quiet
+	if ! git -C "${NETBOX_ROOT}" rev-parse --verify --quiet "refs/tags/${target}" >/dev/null; then
+		echo "netbox-upgrade: no such release tag: ${target}" >&2
+		exit 1
+	fi
+	echo "netbox-upgrade: ${current} -> ${target}"
+else
+	echo "netbox-upgrade: reinstalling ${current}"
+fi
+
+if [ "${assume_yes}" != '--yes' ]; then
+	read -r -p "Continue? [y/N] " answer
+	case "${answer}" in
+	y | Y | yes | YES) ;;
+	*)
+		echo "Aborted."
+		exit 1
+		;;
+	esac
+fi
+
+echo "netbox-upgrade: taking a backup first ..."
+netbox-backup
+
+if [ "${target}" != '--reinstall' ]; then
+	git -C "${NETBOX_ROOT}" checkout --quiet "tags/${target}"
+fi
+
+echo "netbox-upgrade: running upgrade.sh ..."
+"${NETBOX_ROOT}/upgrade.sh"
+
+echo "netbox-upgrade: restarting services ..."
+systemctl restart netbox.service netbox-rq.service
+systemctl reload nginx.service
+
+echo "netbox-upgrade: checking the appliance answers ..."
+for _ in $(seq 1 30); do
+	code="$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ || true)"
+	[ "${code}" = '200' ] && break
+	sleep 5
+done
+if [ "${code:-}" != '200' ]; then
+	echo "netbox-upgrade: NetBox did not come back (last HTTP status ${code:-none})." >&2
+	echo "Roll back with:" >&2
+	echo "    git -C ${NETBOX_ROOT} checkout tags/${current} && ${NETBOX_ROOT}/upgrade.sh" >&2
+	echo "    netbox-restore <the backup taken above>" >&2
+	exit 1
+fi
+
+netbox-status
+echo "netbox-upgrade: now running $(git -C "${NETBOX_ROOT}" describe --tags --always)"
+echo "Roll back with: git -C ${NETBOX_ROOT} checkout tags/${current} && ${NETBOX_ROOT}/upgrade.sh"

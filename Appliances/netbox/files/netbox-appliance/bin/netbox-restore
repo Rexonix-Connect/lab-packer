@@ -1,0 +1,113 @@
+#!/bin/bash
+# Restore an appliance from a netbox-backup pair.
+#
+# Both halves are restored: the database dump and the file archive, which
+# carries /etc/netbox/appliance.json. The configuration has to come back too -
+# it holds SECRET_KEY and the API token pepper, without which the restored
+# database's API tokens and sessions cannot be validated. The current
+# configuration is kept alongside as .pre-restore in case the backup came from
+# a differently addressed appliance.
+set -euo pipefail
+
+BACKUP_DIR=/srv/netbox/backups
+CONFIG=/etc/netbox/appliance.json
+
+usage() {
+	echo "usage: netbox-restore <timestamp|dump-file> [--yes]"
+	echo
+	echo "Available backups:"
+	ls -1 "${BACKUP_DIR}"/netbox-*.dump 2>/dev/null |
+		sed 's#.*/netbox-##; s#\.dump$#  #' || echo "  (none)"
+}
+
+case "${1:-}" in
+-h | --help)
+	usage
+	exit 0
+	;;
+'')
+	usage >&2
+	exit 2
+	;;
+esac
+
+target="${1}"
+assume_yes="${2:-}"
+if [ -f "${target}" ]; then
+	dump="${target}"
+	stamp="$(basename "${dump}" .dump)"
+	stamp="${stamp#netbox-}"
+else
+	stamp="${target}"
+	dump="${BACKUP_DIR}/netbox-${stamp}.dump"
+fi
+files="${BACKUP_DIR}/netbox-${stamp}.files.tar.gz"
+
+[ -f "${dump}" ] || {
+	echo "netbox-restore: ${dump} does not exist" >&2
+	exit 1
+}
+
+echo "About to restore ${stamp}. This REPLACES the current NetBox database"
+echo "and the media, scripts, reports and configuration on this appliance."
+if [ "${assume_yes}" != '--yes' ]; then
+	read -r -p "Type 'restore' to continue: " answer
+	[ "${answer}" = 'restore' ] || {
+		echo "Aborted."
+		exit 1
+	}
+fi
+
+echo "netbox-restore: stopping services ..."
+systemctl stop netbox.service netbox-rq.service
+
+if [ -f "${files}" ]; then
+	echo "netbox-restore: restoring files ..."
+	[ -f "${CONFIG}" ] && cp -a "${CONFIG}" "${CONFIG}.pre-restore"
+	tar --extract --gzip --file="${files}" --directory=/
+	chown root:netbox "${CONFIG}"
+	chmod 0640 "${CONFIG}"
+else
+	echo "netbox-restore: no file archive for ${stamp}; restoring the database only"
+fi
+
+echo "netbox-restore: restoring the database ..."
+eval "$(python3 - "${CONFIG}" <<'PY'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1]) as handle:
+    database = json.load(handle)["database"]
+
+def export(name, value):
+    print("export %s=%s" % (name, shlex.quote(str(value))))
+
+export("PGDATABASE", database.get("NAME", "netbox"))
+export("PGUSER", database.get("USER", "netbox"))
+if database.get("HOST"):
+    export("PGHOST", database["HOST"])
+if database.get("PORT"):
+    export("PGPORT", database["PORT"])
+if database.get("PASSWORD"):
+    export("PGPASSWORD", database["PASSWORD"])
+PY
+)"
+
+if [ -n "${PGHOST:-}" ]; then
+	pg_restore --clean --if-exists --no-owner --no-privileges \
+		--dbname="${PGDATABASE}" "${dump}"
+else
+	runuser -u netbox -- env PGDATABASE="${PGDATABASE}" PGUSER="${PGUSER}" \
+		pg_restore --clean --if-exists --no-owner --no-privileges \
+		--dbname="${PGDATABASE}" <"${dump}"
+fi
+
+echo "netbox-restore: applying any migrations the image is ahead of ..."
+netbox-manage migrate --no-input
+
+echo "netbox-restore: starting services ..."
+systemctl start netbox.service netbox-rq.service
+systemctl reload nginx.service
+
+netbox-status

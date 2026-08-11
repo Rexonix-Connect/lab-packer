@@ -1,0 +1,33 @@
+#!/bin/bash
+# Run a NetBox management command inside the appliance's virtual environment,
+# as the netbox account.
+#
+# Running as netbox matters twice over: the local database authenticates by
+# peer over the Unix socket, so root would be rejected, and anything the
+# command writes under media/ or scripts/ ends up owned by the service rather
+# than by root.
+#
+#   netbox-manage nbshell
+#   netbox-manage housekeeping
+#   netbox-manage changepassword admin
+set -euo pipefail
+
+NETBOX_ROOT=/opt/netbox
+
+if [ "$#" -eq 0 ] || [ "${1}" = '-h' ] || [ "${1}" = '--help' ]; then
+	echo "usage: netbox-manage <command> [options]"
+	echo
+	echo "Runs /opt/netbox/netbox/manage.py as the netbox account. Try"
+	echo "'netbox-manage help' for the list of NetBox management commands."
+	[ "$#" -eq 0 ] && exit 2
+	exit 0
+fi
+
+if [ ! -f /etc/netbox/appliance.json ]; then
+	echo "This appliance has not been bootstrapped yet." >&2
+	echo "Check: systemctl status netbox-bootstrap" >&2
+	exit 1
+fi
+
+exec runuser -u netbox -- env HOME=/tmp \
+	"${NETBOX_ROOT}/venv/bin/python" "${NETBOX_ROOT}/netbox/manage.py" "$@"

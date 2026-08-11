@@ -1,0 +1,56 @@
+#!/bin/bash
+# One-screen health summary for the appliance. Also drives the MOTD, so it has
+# to stay quick, quiet and safe to run as any account.
+set -uo pipefail
+
+STATE_DIR=/var/lib/netbox-appliance
+STATE="${STATE_DIR}/state.json"
+UNITS=(netbox netbox-rq nginx postgresql redis-server)
+
+field() {
+	python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except Exception:
+    print("")' "${STATE}" "${1}" 2>/dev/null
+}
+
+if [ ! -f "${STATE_DIR}/bootstrapped" ]; then
+	if [ -f "${STATE_DIR}/failed" ]; then
+		echo "NetBox appliance: BOOTSTRAP FAILED"
+		echo "  journalctl -u netbox-bootstrap -b   (details in ${STATE_DIR}/failed)"
+		echo "  retry: systemctl start netbox-bootstrap"
+	else
+		echo "NetBox appliance: bootstrapping, not ready yet"
+		echo "  journalctl -u netbox-bootstrap -bf"
+	fi
+	exit 0
+fi
+
+echo "NetBox appliance $(field netbox_version)"
+echo "  URL       $(field url)"
+echo "  Database  $(field database)"
+echo "  Metrics   $(if [ "$(field metrics_enabled)" = 'True' ]; then echo enabled; else echo off; fi)"
+echo "  TLS       $(if [ "$(field self_signed_certificate)" = 'True' ]; then echo 'self-signed (replace via the deploy form)'; else echo 'operator-supplied'; fi)"
+
+printf '  Services '
+unhealthy=0
+for unit in "${UNITS[@]}"; do
+	state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
+	printf '%s=%s ' "${unit}" "${state}"
+	[ "${state}" = 'active' ] || unhealthy=1
+done
+printf '\n'
+
+latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
+if [ -n "${latest}" ]; then
+	echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"
+else
+	echo "  Backup    none yet (nightly timer: $(systemctl is-active netbox-backup.timer 2>/dev/null || echo unknown))"
+fi
+
+if [ -f /root/netbox-credentials.txt ]; then
+	echo "  Login     generated credentials in /root/netbox-credentials.txt (netbox-credentials)"
+fi
+
+exit "${unhealthy}"

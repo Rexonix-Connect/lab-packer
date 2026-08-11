@@ -1,0 +1,11 @@
+[Unit]
+Description=NetBox appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+After=postgresql.service netbox.service
+# Reads the database and media, and writes into /srv/netbox/backups.
+RequiresMountsFor=/srv/netbox
+ConditionPathExists=/var/lib/netbox-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/netbox-backup

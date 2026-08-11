@@ -1,0 +1,32 @@
+#!/bin/bash
+# Grow /srv/netbox to fill its disk.
+#
+# Run at every boot by netbox-datadisk.service, so enlarging the virtual disk
+# in the deploy wizard is the only step an operator has to take. resize2fs is a
+# no-op when the filesystem already spans the device, and online growth of a
+# mounted ext4 is safe, so there is nothing to detect or guard beyond finding
+# the device.
+set -euo pipefail
+
+MOUNTPOINT=/srv/netbox
+
+if ! findmnt --noheadings --mountpoint "${MOUNTPOINT}" >/dev/null 2>&1; then
+	echo "netbox-datadisk-grow: ${MOUNTPOINT} is not mounted; nothing to grow" >&2
+	exit 0
+fi
+
+device="$(findmnt -no SOURCE --mountpoint "${MOUNTPOINT}")"
+if [ ! -b "${device}" ]; then
+	echo "netbox-datadisk-grow: ${device} is not a block device" >&2
+	exit 0
+fi
+
+before="$(findmnt -nbo SIZE --mountpoint "${MOUNTPOINT}")"
+resize2fs "${device}"
+after="$(findmnt -nbo SIZE --mountpoint "${MOUNTPOINT}")"
+
+if [ "${before}" != "${after}" ]; then
+	echo "netbox-datadisk-grow: ${MOUNTPOINT} grown from $((before / 1024 / 1024 / 1024)) GB to $((after / 1024 / 1024 / 1024)) GB"
+else
+	echo "netbox-datadisk-grow: ${MOUNTPOINT} already fills ${device}"
+fi

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Appliance summary at login. netbox-status exits non-zero when a service is
+# down, which must not make the MOTD itself fail.
+[ -x /usr/local/sbin/netbox-status ] || exit 0
+echo
+/usr/local/sbin/netbox-status 2>/dev/null || true
+exit 0

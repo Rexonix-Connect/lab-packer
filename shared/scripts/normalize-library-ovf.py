@@ -21,6 +21,10 @@ import xml.etree.ElementTree as ET
 import requests
 import urllib3
 
+# The descriptor table lives with the provisioner that writes it, so both ends
+# of the export always agree. It honours VAPP_EXTRA_DESCRIPTORS, so an image
+# with extra deploy-form properties must set the same value here as it did for
+# the build, or those properties would sort into the "Other" category.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
     "set_vapp_descriptors", os.path.join(_HERE, "set-vapp-descriptors.py"))
