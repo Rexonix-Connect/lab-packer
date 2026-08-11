@@ -18,7 +18,11 @@ install -d -m 0755 "${STATE_DIR}"
 echo 'build' >"${STATE_DIR}/bootstrapped"
 
 echo '> Starting the appliance ...'
-systemctl start postgresql redis-server netbox netbox-rq nginx
+systemctl start postgresql redis-server netbox netbox-rq
+# restart, not start: nginx is already running from the package installation,
+# and `systemctl start` on an active unit is a no-op that would leave it
+# serving whatever configuration it was launched with.
+systemctl restart nginx
 
 echo '> Waiting for NetBox to answer ...'
 code=''
@@ -29,6 +33,15 @@ for _ in $(seq 1 60); do
 done
 if [ "${code}" != '200' ]; then
 	echo "> NetBox did not serve its login page (last HTTP status: ${code:-none})"
+	# Which layer is broken? gunicorn listens on 127.0.0.1:8001 and nginx
+	# proxies to it, so asking each in turn separates "NetBox is down" from
+	# "nginx is not serving it" without having to read two service logs to
+	# work it out.
+	echo "> Direct to gunicorn (127.0.0.1:8001): $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/login/ || echo 'no answer')"
+	echo '> Listening sockets:'
+	ss -ltnp || true
+	echo '> nginx error log:'
+	tail -n 50 /var/log/nginx/netbox-error.log /var/log/nginx/error.log 2>/dev/null || true
 	systemctl --no-pager --full status netbox nginx || true
 	journalctl --no-pager -u netbox -n 100 || true
 	exit 1
