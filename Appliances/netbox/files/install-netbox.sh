@@ -214,6 +214,26 @@ install -m 0644 -o root -g root \
 install -m 0644 -o root -g root \
 	"${NETBOX_ROOT}/contrib/netbox-rq.service" /etc/systemd/system/netbox-rq.service
 install -m 0644 -o root -g root "${NETBOX_ROOT}/contrib/gunicorn.py" "${NETBOX_ROOT}/gunicorn.py"
+# gunicorn 25 added a control interface backed by a Unix socket, created by
+# default at /run/gunicorn.ctl. netbox.service runs as the unprivileged netbox
+# account, which cannot write there, so every start logs
+#
+#     [ERROR] Control server error: [Errno 13] Permission denied
+#
+# It is not fatal - the workers boot and serve regardless - but an ERROR on
+# every start of a production appliance is exactly the kind of noise that
+# teaches an operator to ignore the log. Nothing here uses gunicornc, so the
+# socket is turned off rather than relocated. This file is untracked by git,
+# so netbox-upgrade leaves it alone.
+#
+# Appending is safe to repeat: the install above overwrites gunicorn.py from
+# contrib/ first, so every run of this script produces exactly one copy of the
+# block. Keep the two together if either is ever moved.
+cat >>"${NETBOX_ROOT}/gunicorn.py" <<'EOF'
+
+# --- lab-packer appliance additions ---
+control_socket_disable = True
+EOF
 
 for unit in netbox netbox-rq; do
 	install -d -m 0755 "/etc/systemd/system/${unit}.service.d"

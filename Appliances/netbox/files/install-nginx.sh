@@ -34,6 +34,19 @@ chmod 0644 /etc/netbox/tls/netbox.crt
 
 nginx -t
 systemctl enable nginx.service
+# The package started nginx with the stock configuration when it was
+# installed, and `nginx -t` only validates the files on disk - it says nothing
+# about what the running process is serving. Without this restart the daemon
+# keeps the default site, never binds 443, and the first thing to notice is
+# verify.sh getting a connection refused from its own HTTPS check.
+systemctl restart nginx.service
+# Assert the listener actually exists, rather than trusting that a restart of
+# an already-running daemon picked the new configuration up.
+if [ -z "$(ss -H -ltn 'sport = :443')" ]; then
+	echo '> nginx is not listening on 443 after restart'
+	systemctl --no-pager --full status nginx.service || true
+	exit 1
+fi
 
 echo '> Opening the web ports in the firewall ...'
 # The hardened base defaults to deny-incoming and only allows SSH. PostgreSQL,
