@@ -24,6 +24,7 @@ import base64
 import binascii
 import datetime
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -60,6 +61,18 @@ SNIPPET_HSTS = '/etc/nginx/snippets/netbox-hsts.conf'
 
 PASSWORD_ALPHABET = string.ascii_letters + string.digits + '!@#%^*-_=+'
 UNSET_HOSTNAMES = {'', 'localhost', 'localhost.localdomain', '(none)'}
+
+# Deploy-form values end up in nginx directives and certificate SANs, so they
+# are untrusted input to a config parser. Anything that is not a plain DNS name
+# is dropped rather than escaped: a semicolon or newline would inject an nginx
+# directive, and a value nginx or openssl merely dislikes would fail the
+# bootstrap and take the whole appliance down with it.
+DNS_NAME_RE = re.compile(
+    r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.?$')
+
+
+def is_dns_name(value):
+    return bool(value) and len(value) <= 253 and bool(DNS_NAME_RE.match(value))
 
 
 def log(message):
@@ -173,16 +186,24 @@ def resolve_identity(props):
     addresses = local_addresses()
     hostname = socket.gethostname()
 
-    fqdn = prop(props, 'netbox.fqdn')
-    if not fqdn:
-        fqdn = prop(props, 'hostname')
+    fqdn = prop(props, 'netbox.fqdn') or prop(props, 'hostname')
+    if fqdn and not is_dns_name(fqdn):
+        log('ignoring %r from the deploy form: not a valid host name' % fqdn)
+        fqdn = ''
     if not fqdn and hostname.lower() not in UNSET_HOSTNAMES:
         resolved = socket.getfqdn()
-        fqdn = resolved if resolved.lower() not in UNSET_HOSTNAMES else hostname
+        candidate = (resolved if resolved.lower() not in UNSET_HOSTNAMES
+                     else hostname)
+        fqdn = candidate if is_dns_name(candidate) else ''
     domain = prop(props, 'network.domain').replace(',', ' ').split()
     if fqdn and '.' not in fqdn and domain:
-        fqdn = '%s.%s' % (fqdn, domain[0])
+        qualified = '%s.%s' % (fqdn, domain[0])
+        if is_dns_name(qualified):
+            fqdn = qualified
     if not fqdn and addresses:
+        # No name anywhere: the first address at least gives the operator a URL
+        # to browse to. It is not a DNS name, so it is kept out of the nginx
+        # server_name directive - "_" already answers on every Host.
         fqdn = addresses[0]
 
     hosts = []
@@ -387,13 +408,18 @@ def write_file(path, content, mode, owner=None):
 #
 
 def write_nginx_snippets(fqdn, metrics_allow, operator_certificate):
-    server_name = 'server_name %s_;\n' % ('%s ' % fqdn if fqdn else '')
+    # fqdn is an address when the deployment has no name of its own, and comes
+    # from the deploy form otherwise, so only a real DNS name is written into
+    # the directive. "_" matches every Host either way, so nothing is lost.
+    name = fqdn if is_dns_name(fqdn) else ''
+    server_name = 'server_name %s_;\n' % ('%s ' % name if name else '')
     write_file(SNIPPET_SERVER_NAME,
                '# Written by netbox-firstboot.py.\n' + server_name, 0o644)
 
     lines = ['# Written by netbox-firstboot.py.\n']
-    if metrics_allow:
-        lines.extend('allow %s;\n' % entry for entry in metrics_allow)
+    # Re-checked at the sink, so this stays safe however it is called.
+    lines.extend('allow %s;\n' % entry for entry in metrics_allow
+                 if is_allow_entry(entry))
     lines.append('deny all;\n')
     write_file(SNIPPET_METRICS, ''.join(lines), 0o644)
 
@@ -409,8 +435,36 @@ def write_nginx_snippets(fqdn, metrics_allow, operator_certificate):
     run(['nginx', '-t'], capture_output=True)
 
 
+def is_allow_entry(entry):
+    """Is this safe to write into an nginx "allow" directive?
+
+    Checked here and again at the point of writing, because a stray semicolon
+    would inject a directive and a plain typo would fail nginx's configuration
+    test and, with it, the whole bootstrap.
+    """
+    try:
+        ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_allowlist(value):
-    return [entry for entry in re.split(r'[,\s]+', value) if entry]
+    """Addresses and networks for the nginx metrics allowlist.
+
+    A rejected entry is dropped rather than fatal: that keeps NetBox serving
+    and leaves the scraper locked out, which is the safe way round.
+    """
+    entries = []
+    for entry in re.split(r'[,\s]+', value):
+        if not entry:
+            continue
+        if not is_allow_entry(entry):
+            log('ignoring %r in netbox.metrics-allow: not an address or CIDR'
+                % entry)
+            continue
+        entries.append(entry)
+    return entries
 
 
 #

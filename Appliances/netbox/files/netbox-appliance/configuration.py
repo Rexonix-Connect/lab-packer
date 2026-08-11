@@ -73,8 +73,14 @@ SESSION_COOKIE_SECURE = True
 # Django sees the client-facing host. Naming the same hosts here as trusted
 # CSRF origins avoids "CSRF verification failed" on the login form when the
 # appliance is reached by a name rather than by address.
+#
+# ALLOWED_HOSTS carries every IPv6 address twice, bare and bracketed, because
+# Django matches the Host header in bracketed form. Only the bracketed one
+# makes a valid origin, so the bare literals are skipped here.
 CSRF_TRUSTED_ORIGINS = [
-    'https://%s' % host for host in ALLOWED_HOSTS if host != '*'
+    'https://%s' % host
+    for host in ALLOWED_HOSTS
+    if host != '*' and (':' not in host or host.startswith('['))
 ]
 
 # Logged to a file rather than only to the journal, because the appliance's
