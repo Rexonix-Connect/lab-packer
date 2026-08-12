@@ -41,7 +41,10 @@ build {
     environment_vars = [
       "BUILD_USERNAME=${var.vmUsername}",
     ]
-    scripts           = ["./files/setup.sh"]
+    scripts = [
+      "../../../shared/scripts/unpin-cloud-init-datasource.sh",
+      "./files/setup.sh",
+    ]
     expect_disconnect = true
   }
   # The vapp block only sets ids and values; enrich the deploy form with
