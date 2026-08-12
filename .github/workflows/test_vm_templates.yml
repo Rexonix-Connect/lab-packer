@@ -289,8 +289,9 @@ jobs:
                 - "$(cat "${RUNNER_TEMP}/${DIAG_KEY_NAME}.pub")"
           EOF
           )"
+          userdata_b64="$(printf '%s' "${userdata}" | base64 -w0)"
           govc vm.change -vm "${VM_NAME}" \
-            -e "guestinfo.userdata=$(printf '%s' "${userdata}" | base64 -w0)" \
+            -e "guestinfo.userdata=${userdata_b64}" \
             -e "guestinfo.userdata.encoding=base64"
           echo "Seeded the '${DIAG_USER}' account for failure diagnostics."
 
