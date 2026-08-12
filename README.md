@@ -350,7 +350,7 @@ First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log`
 
 ### First boot
 
-**First boot takes several minutes** — around eight on a lab cluster, most of it before `netbox-firstboot.py` even starts, since the unit waits on cloud-init and `network-online.target`. `netbox-status` reports `Serving NO` until it finishes, which is expected rather than a fault.
+**First boot takes several minutes.** `netbox-bootstrap.service` waits on cloud-init and `network-online.target` before `netbox-firstboot.py` starts at all, and the run itself migrates the database and creates the superuser. Until it finishes, `netbox-status` says `bootstrapping, not ready yet` and nothing is listening — expected rather than a fault. Afterwards it gains a `Serving` line taken from a loopback request to `/login/`, which is what catches an appliance whose units are up but which is not answering.
 
 `netbox-bootstrap.service` runs once, before `netbox`, `netbox-rq` and `nginx`, which all `Requires=` it. A failed bootstrap therefore leaves the appliance visibly down rather than serving a half-configured NetBox — `systemctl status netbox-bootstrap` is red, the MOTD says so, and the traceback is in `journalctl -u netbox-bootstrap -b` and `/var/lib/netbox-appliance/failed`. Fix the cause and re-run it with `systemctl start netbox-bootstrap`; it is idempotent.
 
