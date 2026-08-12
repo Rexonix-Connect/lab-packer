@@ -37,6 +37,36 @@ printf '# Written by netbox-firstboot.py.\ndeny all;\n' \
 printf '# Written by netbox-firstboot.py.\n' \
 	>/etc/nginx/snippets/netbox-hsts.conf
 
+# Inherited from the base image, which until recently shipped both of these: a
+# `vagrant` account its own finalize failed to delete (userdel refuses while the
+# account owns the shutdown session, and the failure was swallowed) and password
+# authentication still enabled, because `PasswordAuthentication no` was written
+# to the bottom of sshd_config where cloud-init's 50-cloud-init.conf drop-in
+# outranks it. Together they are a password login on every deployed appliance.
+# The appliance clones an already-built base, so it cannot wait for that base to
+# be rebuilt to stop shipping them.
+echo '> Purging inherited build credentials ...'
+rm -f /home/vagrant/.ssh/authorized_keys /etc/sudoers.d/vagrant
+if id vagrant >/dev/null 2>&1; then
+	userdel -r vagrant 2>/dev/null || userdel -f -r vagrant 2>/dev/null || true
+	rm -rf /home/vagrant
+	if id vagrant >/dev/null 2>&1; then
+		echo '> the inherited vagrant account could not be removed; refusing to export the template' >&2
+		exit 1
+	fi
+fi
+install -m 0644 /dev/stdin /etc/ssh/sshd_config.d/00-no-password-auth.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+SSHD
+ssh-keygen -A >/dev/null
+if ! sshd -T 2>/dev/null | grep -qx 'passwordauthentication no'; then
+	echo '> SSH password authentication is still enabled; refusing to export the template' >&2
+	sshd -T 2>/dev/null | grep -i 'passwordauthentication\|kbdinteractive' >&2
+	exit 1
+fi
+rm -f /etc/ssh/ssh_host_*
+
 echo '> Removing the build account ...'
 build_user="${BUILD_USERNAME:-pkrbuild}"
 # Drop the authorized key first, so even a failure below cannot leave an

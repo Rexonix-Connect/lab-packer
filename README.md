@@ -89,6 +89,8 @@ To verify a built VM: `kmod` >= `29-1ubuntu1.1`, newest installed `linux-image-*
 
 The build uses a temporary `vagrant` account and password-based Packer SSH communicator during provisioning. During the final shutdown step, SSH password authentication is disabled and the `vagrant` account is removed from the template. The account password is stored as the `PACKER_VM_PASSWORD` repository secret and is not present in plaintext in any workflow file. Root SSH login is disabled.
 
+> **Both halves of that used to be untrue, and templates built before this fix ship a working `vagrant` password login.** `finalize.sh` ran `userdel -r vagrant || true` from the shutdown command — over `vagrant`'s own SSH session, so `userdel` refused ("currently used by process N") and `|| true` swallowed it. And `PasswordAuthentication no` went to the bottom of `/etc/ssh/sshd_config`, but sshd takes the **first** value it obtains for a keyword and the `Include sshd_config.d/*.conf` line sits near the top — so cloud-init's `50-cloud-init.conf`, which enables password auth because the build needs it, won. Removal now falls back to `userdel -f -r` and **fails the build** if the account survives; the directive moved to `00-no-password-auth.conf`, which sorts ahead of cloud-init's file, and `sshd -T` asserts the effective value before export. Rebuild every template to clear it. The NetBox appliance purges both from the base it clones, so it does not need the base rebuilt first.
+
 ### Build Ubuntu 24.04 Server VM Template
 
 [![Build Ubuntu 24.04 Server VM Template](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml/badge.svg)](../../actions/workflows/build_ubuntu_24_04_server_vm_template.yml)
