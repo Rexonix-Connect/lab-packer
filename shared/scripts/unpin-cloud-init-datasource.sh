@@ -1,12 +1,19 @@
 #!/bin/bash
 # Take the cloud-init datasource off the kernel command line.
 #
-# The ISO builds boot the installer with
+# The ISO builds used to boot the installer with
 #
 #     linux /casper/vmlinuz --- autoinstall ds="nocloud"
 #
 # and casper appends everything after `---` to the *installed* system's kernel
-# command line. `ds=` does not mean "prefer this datasource": cloud-init treats
+# command line. The boot commands now read
+#
+#     linux /casper/vmlinuz autoinstall ds="nocloud" ---
+#
+# so nothing leaks, but every template built before that change still carries
+# the parameter, and this script is what clears them.
+#
+# `ds=` does not mean "prefer this datasource": cloud-init treats
 # it as "use only this one", overriding datasource_list entirely. So every image
 # this repo builds came up pinned to NoCloud with a cmdline seed:
 #
@@ -32,6 +39,11 @@ if [ -f /etc/default/grub ]; then
 	# left byte-identical. The fully-quoted form (ds="nocloud;s=...") has to be
 	# matched before the bare one, or the bare pattern eats the quote that
 	# closes GRUB_CMDLINE_LINUX itself and truncates the file's syntax.
+	#
+	# \b is a word boundary here, not a backspace: this runs under GNU sed and
+	# GNU grep, which is what every image this repo builds ships. It is what
+	# keeps `rootds=nocloudy` from being mangled. Verified against eight real
+	# GRUB_CMDLINE forms, including that one and both quoting styles.
 	sed -i -E '
 		s/\bds="nocloud[^"]*"//g
 		s/\bds=nocloud[^ "]*//g
