@@ -71,7 +71,7 @@ jobs:
       GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
       GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
       TEMPLATE_NAME: ${{ vars.UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME }}
-      VM_NAME: testvm-ubuntu-24-04-server-hardened-${{ github.run_id }}
+      VM_NAME: testvm-ubuntu-24-04-server-hardened-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       # Needed before any `uses: ./.github/actions/...` resolves.
       - uses: actions/checkout@v4
@@ -86,7 +86,7 @@ jobs:
           family: linux
           ip_timeout: ${{ inputs.ip_timeout }}
           seed_diagnostics: ${{ inputs.collect_diagnostics }}
-          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Before anything template-specific: did the guest actually finish
       # booting? A dropped systemd job or a cloud-init that never completes is
@@ -96,7 +96,7 @@ jobs:
         uses: ./.github/actions/verify-guest-boot
         with:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
-          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Verify the vApp deploy form schema
         run: |
@@ -125,7 +125,7 @@ jobs:
         with:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
           vm_name: ${{ env.VM_NAME }}
-          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Clean up
         if: always()
@@ -135,5 +135,5 @@ jobs:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
           keep_minutes: ${{ inputs.keep_minutes }}
           destroy_on_failure: ${{ inputs.destroy_on_failure }}
-          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-24-04-server-hardened-${{ github.run_id }}-${{ github.run_attempt }}
           job_status: ${{ job.status }}

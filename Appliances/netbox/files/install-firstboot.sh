@@ -29,7 +29,9 @@ done
 # applied), logging nothing against any unit. The appliance booted in thirteen
 # seconds and served nothing. Fail the build rather than ship that again.
 for unit in netbox-bootstrap netbox-reconcile; do
-	if grep -qE '^(After|Requires|Wants)=.*cloud-(final|config)\.service' \
+	# After= only: Requires= and Wants= pull a unit into the transaction but
+	# impose no ordering, so they cannot close the cycle on their own.
+	if grep -qE '^After=.*cloud-(final|config)\.service' \
 		"/etc/systemd/system/${unit}.service"; then
 		echo "${unit}.service orders itself against a late cloud-init unit;" >&2
 		echo 'that creates a dependency cycle through multi-user.target.' >&2

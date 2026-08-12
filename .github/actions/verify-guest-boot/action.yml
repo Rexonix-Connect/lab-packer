@@ -20,6 +20,16 @@ inputs:
     description: How long to keep retrying the first SSH login
     required: false
     default: '5'
+  cloud_init_timeout_minutes:
+    description: >
+      How long to wait for cloud-init to reach done. multi-user.target is
+      implicitly ordered after the units it wants, and cloud-final.service is
+      ordered after multi-user.target, so cloud-init cannot finish until every
+      service wanted by that target has. An image with a long first-boot unit -
+      the NetBox appliance allows fifteen minutes for its bootstrap - must pass
+      a value that covers it, or a healthy guest fails here.
+    required: false
+    default: '5'
 
 runs:
   using: composite
@@ -60,10 +70,14 @@ runs:
         GUEST_IP: ${{ inputs.guest_ip }}
         DIAG_USER: ${{ inputs.diag_user }}
         DIAG_KEY: ${{ inputs.diag_key }}
+        CLOUD_INIT_TIMEOUT_MINUTES: ${{ inputs.cloud_init_timeout_minutes }}
       run: |
         ssh_opts="-i ${DIAG_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=yes"
+        # SendEnv would need the guest to accept it; passing the value on the
+        # command line keeps the remote script a quoted heredoc.
         # shellcheck disable=SC2086
-        ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" 'sudo -n bash -s' <<'REMOTE'
+        ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" \
+          "sudo -n env CLOUD_INIT_TIMEOUT_MINUTES=${CLOUD_INIT_TIMEOUT_MINUTES} bash -s" <<'REMOTE'
         set -uo pipefail
         failed=0
 
@@ -91,12 +105,18 @@ runs:
         # tested for: when cloud-final's job was dropped, cloud-init sits at
         # "running" for the life of the machine and an unbounded wait would hang
         # here until the job timeout instead of reporting the fault.
+        #
+        # The bound has to cover the guest's slowest boot unit, not just
+        # cloud-init's own work: multi-user.target is implicitly ordered after
+        # the units it wants, and cloud-final.service after that target, so
+        # cloud-init finishes last on any image with a long first-boot service.
+        minutes="${CLOUD_INIT_TIMEOUT_MINUTES:-5}"
         echo "::group::cloud-init"
-        timeout 300 cloud-init status --wait --long 2>&1 || true
+        timeout "$(( minutes * 60 ))" cloud-init status --wait --long 2>&1 || true
         status="$(cloud-init status 2>/dev/null | awk -F': ' '/^status:/ {print $2}')"
         echo "final status: ${status:-unknown}"
         if [ "${status}" != 'done' ]; then
-          echo "cloud-init did not reach 'done' within 5 minutes (status: ${status:-unknown})."
+          echo "cloud-init did not reach 'done' within ${minutes} minutes (status: ${status:-unknown})."
           echo "Deploy-form settings are not being applied to this guest."
           failed=1
         fi

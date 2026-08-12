@@ -91,7 +91,7 @@ jobs:
       GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
       GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
       TEMPLATE_NAME: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
-      VM_NAME: testvm-netbox-appliance-${{ github.run_id }}
+      VM_NAME: testvm-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       # Needed before any `uses: ./.github/actions/...` resolves.
       - uses: actions/checkout@v4
@@ -106,18 +106,25 @@ jobs:
           family: linux
           ip_timeout: ${{ inputs.ip_timeout }}
           seed_diagnostics: ${{ inputs.collect_diagnostics }}
-          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
 
       # This runs first for a reason. An appliance whose systemd jobs were
       # dropped, or whose cloud-init never finished, fails every check below as
       # an HTTP timeout twenty minutes later and says nothing about why. It cost
       # three rounds of misdiagnosis to learn that.
+      #
+      # cloud-init gets the appliance's own bootstrap allowance rather than the
+      # action's default: multi-user.target is implicitly ordered after the
+      # units it wants, and cloud-final.service after that target, so cloud-init
+      # cannot reach done until netbox-bootstrap.service has - and that unit
+      # allows itself fifteen minutes for migrations against a slow database.
       - name: Verify the guest booted cleanly
         if: ${{ inputs.collect_diagnostics }}
         uses: ./.github/actions/verify-guest-boot
         with:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
-          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+          cloud_init_timeout_minutes: ${{ inputs.netbox_timeout_minutes }}
 
       - name: Verify the vApp deploy form schema
         run: |
@@ -227,7 +234,7 @@ jobs:
         with:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
           vm_name: ${{ env.VM_NAME }}
-          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Clean up
         if: always()
@@ -237,5 +244,5 @@ jobs:
           guest_ip: ${{ steps.deploy.outputs.guest_ip }}
           keep_minutes: ${{ inputs.keep_minutes }}
           destroy_on_failure: ${{ inputs.destroy_on_failure }}
-          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
           job_status: ${{ job.status }}

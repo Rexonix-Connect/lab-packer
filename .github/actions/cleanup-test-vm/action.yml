@@ -20,8 +20,12 @@ inputs:
     description: Delete the VM even when the job failed (true/false)
     required: false
     default: 'false'
+  diag_user:
+    description: Account the key authorizes, for the message
+    required: false
+    default: diag
   diag_key:
-    description: Private key to remove from the runner
+    description: Private key, removed only once the VM it authorizes is gone
     required: true
   job_status:
     description: The calling job's status so far, from job.status
@@ -46,8 +50,19 @@ runs:
       env:
         VM_NAME: ${{ inputs.vm_name }}
         GUEST_IP: ${{ inputs.guest_ip }}
+        DIAG_USER: ${{ inputs.diag_user }}
+        DIAG_KEY: ${{ inputs.diag_key }}
       run: |
         echo "::warning::'${VM_NAME}' (${GUEST_IP:-no IP}) was left running for inspection. Delete it with: govc vm.destroy ${VM_NAME}"
+        # The seeded account has a locked password and the templates ship with
+        # their provisioning account removed or disabled, so this key is the
+        # only way onto the VM that was deliberately kept. Deleting it here
+        # would leave the evidence intact and unreachable.
+        if [ -f "${DIAG_KEY}" ]; then
+          echo "Kept the login for it on this runner:"
+          echo "  ssh -i ${DIAG_KEY} ${DIAG_USER}@${GUEST_IP:-<ip>}"
+          echo "  rm -f ${DIAG_KEY} ${DIAG_KEY}.pub   # once the VM is gone"
+        fi
 
     - name: Delete the test VM
       if: ${{ inputs.job_status != 'failure' || inputs.destroy_on_failure == 'true' }}
@@ -62,7 +77,10 @@ runs:
           echo "'${VM_NAME}' was not deployed; nothing to delete."
         fi
 
+    # Only once the VM it authorizes is gone. A key kept beside a retained VM is
+    # the access path to it; a key kept after the VM is destroyed is litter.
     - name: Remove the diagnostics key
+      if: ${{ inputs.job_status != 'failure' || inputs.destroy_on_failure == 'true' }}
       shell: bash
       env:
         DIAG_KEY: ${{ inputs.diag_key }}
