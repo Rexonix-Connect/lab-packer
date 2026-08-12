@@ -550,8 +550,15 @@ def restart_services():
 
     At boot this unit runs before the services, so there is nothing to
     restart; on a manual re-run it makes the new configuration take effect.
+
+    --no-block is what keeps that safe. At boot those three units are already
+    queued behind this one, and asking systemd to restart a unit that is
+    waiting for the current unit to finish is an ordering deadlock: systemctl
+    blocks on a job that cannot start until systemctl returns. check=False
+    guards against a non-zero exit, not against hanging until
+    TimeoutStartSec expires.
     """
-    run(['systemctl', 'try-reload-or-restart',
+    run(['systemctl', '--no-block', 'try-reload-or-restart',
          'netbox.service', 'netbox-rq.service', 'nginx.service'], check=False)
 
 
