@@ -42,6 +42,18 @@ for unit in "${UNITS[@]}"; do
 done
 printf '\n'
 
+# Unit states answer "did systemd start it"; this answers the question that
+# actually matters. They can disagree - a deployment once came up with nginx
+# active, NetBox inactive and a bootstrap that reported success, and nothing on
+# the appliance said it was not serving.
+code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ 2>/dev/null || true)"
+if [ "${code}" = '200' ]; then
+	echo "  Serving   yes (HTTP 200)"
+else
+	echo "  Serving   NO (HTTP ${code:-000}) - journalctl -u netbox-bootstrap -b"
+	unhealthy=1
+fi
+
 latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
 if [ -n "${latest}" ]; then
 	echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"

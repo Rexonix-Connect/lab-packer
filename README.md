@@ -350,6 +350,8 @@ First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log`
 
 ### First boot
 
+**First boot takes several minutes** — around eight on a lab cluster, most of it before `netbox-firstboot.py` even starts, since the unit waits on cloud-init and `network-online.target`. `netbox-status` reports `Serving NO` until it finishes, which is expected rather than a fault.
+
 `netbox-bootstrap.service` runs once, before `netbox`, `netbox-rq` and `nginx`, which all `Requires=` it. A failed bootstrap therefore leaves the appliance visibly down rather than serving a half-configured NetBox — `systemctl status netbox-bootstrap` is red, the MOTD says so, and the traceback is in `journalctl -u netbox-bootstrap -b` and `/var/lib/netbox-appliance/failed`. Fix the cause and re-run it with `systemctl start netbox-bootstrap`; it is idempotent.
 
 It reads the deploy form through the base image's own `/usr/local/sbin/ovf-settings.py`, so there is no second OVF parser to keep in step. If the OVF environment is unavailable it fails open: every value falls back to a generated default and the appliance still comes up.
@@ -371,7 +373,7 @@ All of them need root and live in `/usr/local/sbin`:
 
 | Command | Purpose |
 | --- | --- |
-| `netbox-status` | Version, URL, database mode, TLS mode, service health, last backup. Also drives the MOTD |
+| `netbox-status` | Version, URL, database mode, TLS mode, service health, **whether it is actually serving** (a loopback request to `/login/`, which is a different question from whether systemd started the units) and the last backup. Also drives the MOTD |
 | `netbox-manage …` | Any NetBox management command inside the venv, as the `netbox` account (`netbox-manage nbshell`, `netbox-manage housekeeping`, `netbox-manage changepassword`) |
 | `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/srv/netbox/backups`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |
 | `netbox-restore <timestamp>` | Restores a backup pair, applies any pending migrations, restarts and health-checks. Confirm-prompted |
