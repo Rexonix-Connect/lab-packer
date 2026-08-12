@@ -65,7 +65,10 @@ source "vsphere-iso" "base" {
   boot_wait  = "3s"
   boot_command = [
     "c<wait>",
-    "linux /casper/vmlinuz --- autoinstall ds=\"nocloud\"",
+    # Parameters before `---`; casper appends anything after it to the
+    # installed system's kernel command line, and a leaked ds= pins
+    # cloud-init to that one datasource for the life of the image.
+    "linux /casper/vmlinuz autoinstall ds=\"nocloud\" ---",
     "<enter><wait>",
     "initrd /casper/initrd",
     "<enter><wait>",

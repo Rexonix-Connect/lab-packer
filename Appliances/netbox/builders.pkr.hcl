@@ -60,6 +60,10 @@ build {
     ]
     scripts = [
       "./files/wait-for-base.sh",
+      # The appliance clones an already-built base, so it inherits that
+      # image's kernel command line and cannot wait for the base to be
+      # rebuilt to get a working datasource list.
+      "../../shared/scripts/unpin-cloud-init-datasource.sh",
       "./files/install-datadisk.sh",
       "./files/install-packages.sh",
       # Before install-netbox.sh on purpose. This step ends in `nginx -t`, and
