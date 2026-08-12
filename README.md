@@ -118,17 +118,26 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 
 [![Test VM Templates](../../actions/workflows/test_vm_templates.yml/badge.svg)](../../actions/workflows/test_vm_templates.yml)
 
-Smoke-tests all eight VM templates currently in the content library: for each template (Ubuntu 22.04/24.04 server and desktop, Ubuntu 24.04 server hardened, the NetBox appliance, Windows Server 2019/2022) a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported. The VM is then kept running for an inspection window before being deleted; deletion also runs when a verification step fails, so no test VMs are left behind (raise `keep_minutes` if you want more time to inspect a failure via the console).
+Smoke-tests the VM templates in the content library: for each selected template a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported.
 
-The checks are deliberately credential-free (templates ship with the provisioning account removed or disabled): a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all eight `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
+**Each template has its own checkbox, all ticked by default**, so a run tests everything unless you say otherwise. Untick the rest to re-test a single image after a fix, instead of sitting through the other seven on a single self-hosted runner; the unticked jobs are never created rather than created and skipped. Unticking everything fails the run rather than reporting success for a run that tested nothing.
+
+The checks themselves need no credentials — templates ship with the provisioning account removed or disabled, and a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all eight `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
+
+**On failure, a Linux guest is asked what went wrong.** Before power-on the job seeds a throwaway `diag` account through the VMware guestinfo datasource (a per-run ed25519 key that never leaves the runner, authorizing an account that only exists on a VM about to be deleted). If a check then fails, it logs in and dumps the boot and service state into the workflow log in collapsible sections: for the NetBox appliance that starts with `/var/lib/netbox-appliance/failed`, where the first-boot bootstrap writes its full traceback, followed by the failed units, the `netbox-bootstrap` journal, cloud-init status, the `/srv/netbox` mount, the listening sockets and the nginx error log. The account is not created at all when `collect_diagnostics` is off, and if cloud-init never ran there will be no account to log in as — which is itself a finding, and the job says so and points at the console.
+
+**A failed test keeps its VM.** Successful and cancelled runs delete theirs as before; a failure leaves it running and prints the `govc vm.destroy` line to clean it up, so the evidence outlives the run. Set `destroy_on_failure` to delete regardless.
 
 The NetBox appliance gets two extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: its fourteen `netbox.*` deploy-form properties must be present, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
 
 #### Workflow inputs
 
-- `keep_minutes` - minutes to keep each test VM running before deletion; defaults to `10`
+- `test_<template>` - one checkbox per template (`test_ubuntu_22_04_server`, `test_ubuntu_22_04_desktop`, `test_ubuntu_24_04_server`, `test_ubuntu_24_04_desktop`, `test_ubuntu_24_04_server_hardened`, `test_netbox_appliance`, `test_windows_server_2019`, `test_windows_server_2022`); all default to `true`
+- `keep_minutes` - minutes to keep each **successful** test VM running before deletion; defaults to `0`. Failures keep their VM regardless, so this only pads runs that passed
 - `ip_timeout` - how long to wait for VMware Tools to report an IP address, e.g. `15m`; defaults to `15m`
 - `netbox_http_check` - check that the NetBox appliance actually serves HTTPS; defaults to `true`, turn it off when the runner has no route to the VM network
+- `collect_diagnostics` - on failure, log in to a Linux guest and dump its boot and service state; defaults to `true`
+- `destroy_on_failure` - delete the test VM even when the test fails; defaults to `false`
 - `netbox_timeout_minutes` - minutes to wait for the appliance's first-boot bootstrap before failing; defaults to `10`
 
 ### Rebuild All VM Templates
