@@ -545,20 +545,43 @@ def netbox_version():
                                '--always']) or 'unknown'
 
 
+def system_is_booting():
+    """True while systemd is still bringing multi-user.target up."""
+    result = subprocess.run(['systemctl', 'is-system-running'],
+                            text=True, capture_output=True)
+    # Exits non-zero for anything but "running", so the exit status cannot be
+    # used to tell "still booting" from "up but degraded"; the word on stdout
+    # can.
+    return result.stdout.strip() in ('initializing', 'starting')
+
+
 def restart_services():
-    """Restart only what is already running.
+    """Pick up the new configuration - but never during boot.
 
-    At boot this unit runs before the services, so there is nothing to
-    restart; on a manual re-run it makes the new configuration take effect.
+    netbox.service, netbox-rq.service and nginx.service are ordered after this
+    unit, so at boot they already have start jobs queued behind it. systemctl's
+    default job mode is "replace": a newly enqueued job replaces the queued one
+    unless the two types are mergeable, and that is where the two behave
+    differently.
 
-    --no-block is what keeps that safe. At boot those three units are already
-    queued behind this one, and asking systemd to restart a unit that is
-    waiting for the current unit to finish is an ordering deadlock: systemctl
-    blocks on a job that cannot start until systemctl returns. check=False
-    guards against a non-zero exit, not against hanging until
-    TimeoutStartSec expires.
+    nginx has an ExecReload, so try-reload-or-restart becomes a reload-type
+    job, which does merge with a pending start - nginx comes up. NetBox's
+    units, straight from upstream contrib/, have no ExecReload, so the request
+    degrades to try-restart, which is not mergeable with a pending start: the
+    queued start is cancelled, try-restart then does nothing because the unit
+    is not running, and it stays inactive forever.
+
+    That asymmetry is precisely what the first deployment showed - nginx
+    active, netbox and netbox-rq inactive rather than failed, after a bootstrap
+    that reported success. So at boot this does nothing at all and lets the
+    ordering start them; only a manual re-run, where the services are already
+    up and there is no queued job to clobber, actually restarts anything.
     """
-    run(['systemctl', '--no-block', 'try-reload-or-restart',
+    if system_is_booting():
+        log('boot in progress; netbox, netbox-rq and nginx start from their'
+            ' own ordering')
+        return
+    run(['systemctl', 'try-reload-or-restart',
          'netbox.service', 'netbox-rq.service', 'nginx.service'], check=False)
 
 

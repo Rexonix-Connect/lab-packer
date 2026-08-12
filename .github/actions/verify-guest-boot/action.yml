@@ -1,0 +1,130 @@
+name: Verify the guest booted cleanly
+description: >
+  Assert that a Linux guest actually completed its boot: the seeded account
+  exists, cloud-init finished, and systemd did not drop jobs to break a
+  dependency cycle. Runs before any template-specific check so a broken boot
+  fails here, with a reason, instead of ten minutes later as a timeout.
+
+inputs:
+  guest_ip:
+    description: Address of the guest
+    required: true
+  diag_user:
+    description: Account seeded by deploy-test-vm
+    required: false
+    default: diag
+  diag_key:
+    description: Private key for that account
+    required: true
+  login_timeout_minutes:
+    description: How long to keep retrying the first SSH login
+    required: false
+    default: '5'
+  cloud_init_timeout_minutes:
+    description: >
+      How long to wait for cloud-init to reach done. multi-user.target is
+      implicitly ordered after the units it wants, and cloud-final.service is
+      ordered after multi-user.target, so cloud-init cannot finish until every
+      service wanted by that target has. An image with a long first-boot unit -
+      the NetBox appliance allows fifteen minutes for its bootstrap - must pass
+      a value that covers it, or a healthy guest fails here.
+    required: false
+    default: '5'
+
+runs:
+  using: composite
+  steps:
+    # A failed login here is fatal, not advisory. The account is created by
+    # cloud-init from guestinfo user-data, so "cannot log in" means cloud-init
+    # did not apply deploy-time configuration at all - the same channel the
+    # deploy form uses. An appliance in that state is broken even if it later
+    # answers on 443.
+    - name: Wait for the diagnostics account
+      shell: bash
+      env:
+        GUEST_IP: ${{ inputs.guest_ip }}
+        DIAG_USER: ${{ inputs.diag_user }}
+        DIAG_KEY: ${{ inputs.diag_key }}
+        LOGIN_TIMEOUT_MINUTES: ${{ inputs.login_timeout_minutes }}
+      run: |
+        ssh_opts="-i ${DIAG_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=yes"
+        echo "Waiting up to ${LOGIN_TIMEOUT_MINUTES} minutes for ${DIAG_USER}@${GUEST_IP} ..."
+        deadline=$(( $(date +%s) + LOGIN_TIMEOUT_MINUTES * 60 ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          # shellcheck disable=SC2086
+          if ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" true 2>/dev/null; then
+            echo "Logged in as ${DIAG_USER}: cloud-init applied the deploy-time user-data."
+            exit 0
+          fi
+          sleep 10
+        done
+        echo "Could not log in as ${DIAG_USER}@${GUEST_IP} within ${LOGIN_TIMEOUT_MINUTES} minutes."
+        echo "The account is created by cloud-init from guestinfo user-data, so this means"
+        echo "cloud-init did not apply deploy-time configuration - the same channel the vApp"
+        echo "deploy form uses. Check the console: cloud-init status --long"
+        exit 1
+
+    - name: Check cloud-init finished and systemd kept every job
+      shell: bash
+      env:
+        GUEST_IP: ${{ inputs.guest_ip }}
+        DIAG_USER: ${{ inputs.diag_user }}
+        DIAG_KEY: ${{ inputs.diag_key }}
+        CLOUD_INIT_TIMEOUT_MINUTES: ${{ inputs.cloud_init_timeout_minutes }}
+      run: |
+        ssh_opts="-i ${DIAG_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=yes"
+        # SendEnv would need the guest to accept it; passing the value on the
+        # command line keeps the remote script a quoted heredoc.
+        # shellcheck disable=SC2086
+        ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" \
+          "sudo -n env CLOUD_INIT_TIMEOUT_MINUTES=${CLOUD_INIT_TIMEOUT_MINUTES} bash -s" <<'REMOTE'
+        set -uo pipefail
+        failed=0
+
+        echo "::group::boot state"
+        echo "systemd: $(systemctl is-system-running 2>&1)"
+        systemd-analyze 2>&1 | head -n 2
+        echo "::endgroup::"
+
+        # An ordering cycle is not reported as a unit failure: systemd breaks it
+        # by deleting jobs, and the units it deletes log nothing at all. Nothing
+        # else on the guest will tell you this happened.
+        echo "::group::dependency cycles"
+        cycles="$(journalctl -b --no-pager | grep -iE 'ordering cycle|deleted to break' || true)"
+        if [ -n "${cycles}" ]; then
+          echo "${cycles}"
+          echo "systemd deleted start jobs to break a dependency cycle. Units named above"
+          echo "never ran, and anything that Requires= them was dropped with them."
+          failed=1
+        else
+          echo "none"
+        fi
+        echo "::endgroup::"
+
+        # Bounded, because `--wait` blocks forever in exactly the case being
+        # tested for: when cloud-final's job was dropped, cloud-init sits at
+        # "running" for the life of the machine and an unbounded wait would hang
+        # here until the job timeout instead of reporting the fault.
+        #
+        # The bound has to cover the guest's slowest boot unit, not just
+        # cloud-init's own work: multi-user.target is implicitly ordered after
+        # the units it wants, and cloud-final.service after that target, so
+        # cloud-init finishes last on any image with a long first-boot service.
+        minutes="${CLOUD_INIT_TIMEOUT_MINUTES:-5}"
+        echo "::group::cloud-init"
+        timeout "$(( minutes * 60 ))" cloud-init status --wait --long 2>&1 || true
+        status="$(cloud-init status 2>/dev/null | awk -F': ' '/^status:/ {print $2}')"
+        echo "final status: ${status:-unknown}"
+        if [ "${status}" != 'done' ]; then
+          echo "cloud-init did not reach 'done' within ${minutes} minutes (status: ${status:-unknown})."
+          echo "Deploy-form settings are not being applied to this guest."
+          failed=1
+        fi
+        echo "::endgroup::"
+
+        echo "::group::failed units"
+        systemctl --no-pager --failed
+        echo "::endgroup::"
+
+        exit "${failed}"
+        REMOTE

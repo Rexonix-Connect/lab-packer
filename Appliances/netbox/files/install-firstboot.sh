@@ -21,6 +21,24 @@ for unit in netbox netbox-rq nginx; do
 		"/etc/systemd/system/${unit}.service.d/20-bootstrap.conf"
 done
 
+# Both units are pulled into multi-user.target, and cloud-final.service is
+# ordered after multi-user.target. Ordering either of them after cloud-final
+# closes a dependency cycle, and systemd breaks a cycle by deleting jobs: it
+# dropped the bootstrap (so nothing that Requires= it started) and cloud-final
+# itself (so cloud-init never finished and the deploy form stopped being
+# applied), logging nothing against any unit. The appliance booted in thirteen
+# seconds and served nothing. Fail the build rather than ship that again.
+for unit in netbox-bootstrap netbox-reconcile; do
+	# After= only: Requires= and Wants= pull a unit into the transaction but
+	# impose no ordering, so they cannot close the cycle on their own.
+	if grep -qE '^After=.*cloud-(final|config)\.service' \
+		"/etc/systemd/system/${unit}.service"; then
+		echo "${unit}.service orders itself against a late cloud-init unit;" >&2
+		echo 'that creates a dependency cycle through multi-user.target.' >&2
+		exit 1
+	fi
+done
+
 systemctl daemon-reload
 systemctl enable netbox-bootstrap.service netbox-reconcile.service
 echo '> First-boot bootstrap installed.'

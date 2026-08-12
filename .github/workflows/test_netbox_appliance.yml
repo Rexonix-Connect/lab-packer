@@ -1,0 +1,248 @@
+name: Test NetBox Appliance
+
+# The appliance is the reason each template got its own workflow: it is the one
+# image whose test is about what the software does rather than whether the VM
+# came up. The shared VM lifecycle is in the composite actions under
+# .github/actions/; everything below is specific to NetBox.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep the test VM running before deletion (0 deletes immediately)
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+      netbox_http_check:
+        description: Check that the appliance serves HTTPS (needs the runner to reach the VM network)
+        type: boolean
+        required: false
+        default: true
+      netbox_timeout_minutes:
+        description: Minutes to wait for the appliance to finish its first-boot bootstrap
+        type: number
+        required: false
+        default: 20
+      collect_diagnostics:
+        description: Seed a login on the guest, check it booted cleanly, and dump its state on failure
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        description: Delete the test VM even when the test fails (failures otherwise keep it for inspection)
+        type: boolean
+        required: false
+        default: false
+
+  workflow_call:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep the test VM running before deletion (0 deletes immediately)
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+      netbox_http_check:
+        description: Check that the appliance serves HTTPS (needs the runner to reach the VM network)
+        type: boolean
+        required: false
+        default: true
+      netbox_timeout_minutes:
+        description: Minutes to wait for the appliance to finish its first-boot bootstrap
+        type: number
+        required: false
+        default: 20
+      collect_diagnostics:
+        description: Seed a login on the guest, check it booted cleanly, and dump its state on failure
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        description: Delete the test VM even when the test fails (failures otherwise keep it for inspection)
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    # Deploy, boot, first-boot bootstrap and the HTTP checks, with room for the
+    # keep-for-inspection hold on top.
+    timeout-minutes: 90
+    name: Test netbox-appliance
+    env:
+      GOVC_URL: ${{ secrets.VCENTER_HOST }}
+      GOVC_USERNAME: ${{ secrets.VCENTER_USER }}
+      GOVC_PASSWORD: ${{ secrets.VCENTER_PASS }}
+      GOVC_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      GOVC_DATACENTER: ${{ vars.VCENTER_DATACENTER_NAME }}
+      GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
+      GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
+      TEMPLATE_NAME: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+      VM_NAME: testvm-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # Needed before any `uses: ./.github/actions/...` resolves.
+      - uses: actions/checkout@v4
+
+      - name: Deploy and power on
+        id: deploy
+        uses: ./.github/actions/deploy-test-vm
+        with:
+          template_name: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+          library_name: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          vm_name: ${{ env.VM_NAME }}
+          family: linux
+          ip_timeout: ${{ inputs.ip_timeout }}
+          seed_diagnostics: ${{ inputs.collect_diagnostics }}
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # This runs first for a reason. An appliance whose systemd jobs were
+      # dropped, or whose cloud-init never finished, fails every check below as
+      # an HTTP timeout twenty minutes later and says nothing about why. It cost
+      # three rounds of misdiagnosis to learn that.
+      #
+      # cloud-init gets the appliance's own bootstrap allowance rather than the
+      # action's default: multi-user.target is implicitly ordered after the
+      # units it wants, and cloud-final.service after that target, so cloud-init
+      # cannot reach done until netbox-bootstrap.service has - and that unit
+      # allows itself fifteen minutes for migrations against a slow database.
+      - name: Verify the guest booted cleanly
+        if: ${{ inputs.collect_diagnostics }}
+        uses: ./.github/actions/verify-guest-boot
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+          cloud_init_timeout_minutes: ${{ inputs.netbox_timeout_minutes }}
+
+      - name: Verify the vApp deploy form schema
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          if [ -z "${props}" ]; then
+            echo "::warning::${TEMPLATE_NAME} has no vApp configuration (template predates the deploy form); skipping schema check."
+            exit 0
+          fi
+          echo "vApp properties on the deployed VM:"
+          echo "${props}"
+          for key in hostname username public-keys password user-data network.ip4 network.gw4 network.ip6 network.gw6 network.dns network.domain; do
+            if ! echo "${props}" | grep -qx "${key}"; then
+              echo "Missing vApp property: ${key}"
+              exit 1
+            fi
+          done
+          echo "All deploy form properties survived the export/deploy chain."
+
+      # The appliance's form carries NetBox fields on top of the shared eleven,
+      # and they only get there if set-vapp-descriptors.py ran with the
+      # descriptor file. A missing id means the build silently shipped a
+      # template nobody can configure at deploy time.
+      - name: Verify the NetBox deploy form properties
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          for key in netbox.fqdn netbox.time-zone netbox.admin-username netbox.admin-email \
+                     netbox.admin-password netbox.metrics-allow netbox.tls-cert netbox.tls-key \
+                     netbox.db-host netbox.db-name netbox.db-user netbox.db-password \
+                     netbox.redis-host netbox.redis-password; do
+            if ! echo "${props}" | grep -qx "${key}"; then
+              echo "Missing NetBox deploy form property: ${key}"
+              exit 1
+            fi
+          done
+          echo "All NetBox deploy form properties are present."
+
+      # NetBox, its database and its backups live on a second disk so that their
+      # growth cannot fill the 60 GB root. That disk is attached through the
+      # vCenter API rather than declared in the Packer source, so it is worth
+      # confirming it survived the export and deploy.
+      - name: Verify the appliance data disk
+        run: |
+          govc device.info -vm "${VM_NAME}" -json 'disk-*' | python3 -c '
+          import json, sys
+          disks = sorted(
+              (d["capacityInKB"] // (1024 * 1024), d["deviceInfo"]["label"])
+              for d in json.load(sys.stdin)["devices"])
+          for size, label in disks:
+              print("%s: %d GB" % (label, size))
+          if len(disks) != 2:
+              sys.exit("expected 2 disks (60 GB root + data disk), found %d" % len(disks))
+          if disks[0][0] < 50:
+              sys.exit("smallest disk is %d GB; the root disk should be 60 GB" % disks[0][0])
+          if disks[1][0] < 50:
+              sys.exit("data disk is only %d GB" % disks[1][0])
+          print("Root and data disks both present.")'
+
+      # Deployed with an empty form, the appliance has to generate its own
+      # identity and serve NetBox over HTTPS unaided. This is the check that
+      # distinguishes "the VM booted" from "the appliance works".
+      - name: Verify NetBox is serving
+        if: ${{ inputs.netbox_http_check }}
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.netbox_timeout_minutes }}
+        run: |
+          echo "Waiting up to ${TIMEOUT_MINUTES} minutes for NetBox at https://${GUEST_IP}/ ..."
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          code=''
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/login/" || true)"
+            [ "${code}" = '200' ] && break
+            sleep 15
+          done
+          if [ "${code}" != '200' ]; then
+            echo "NetBox did not serve its login page (last HTTP status: ${code:-none})."
+            exit 1
+          fi
+          echo "Login page: HTTP 200"
+
+          redirect="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://${GUEST_IP}/" || true)"
+          [ "${redirect}" = '301' ] || { echo "Plain HTTP returned ${redirect}, expected 301"; exit 1; }
+          echo "HTTP redirect: 301"
+
+          api="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/api/" || true)"
+          [ "${api}" = '403' ] || { echo "Unauthenticated /api/ returned ${api}, expected 403"; exit 1; }
+          echo "API authentication: enforced"
+
+          metrics="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/metrics" || true)"
+          [ "${metrics}" = '403' ] || { echo "/metrics returned ${metrics}; it must be denied when no allowlist was deployed"; exit 1; }
+          echo "Metrics: denied by default"
+
+          echo "Certificate generated at first boot:"
+          openssl s_client -connect "${GUEST_IP}:443" </dev/null 2>/dev/null |
+            openssl x509 -noout -subject -dates -ext subjectAltName
+
+      - name: Collect guest diagnostics
+        if: ${{ failure() && inputs.collect_diagnostics }}
+        uses: ./.github/actions/collect-vm-diagnostics
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          vm_name: ${{ env.VM_NAME }}
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Clean up
+        if: always()
+        uses: ./.github/actions/cleanup-test-vm
+        with:
+          vm_name: ${{ env.VM_NAME }}
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          keep_minutes: ${{ inputs.keep_minutes }}
+          destroy_on_failure: ${{ inputs.destroy_on_failure }}
+          diag_key: ${{ runner.temp }}/testvm-diag-netbox-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+          job_status: ${{ job.status }}

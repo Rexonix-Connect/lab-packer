@@ -6,7 +6,9 @@ Documentation=https://github.com/Rexonix-Connect/lab-packer
 # address or host name can change under a running appliance; this keeps
 # ALLOWED_HOSTS and a self-signed certificate in step with it. Secrets, the
 # database and the superuser are never touched.
-After=cloud-final.service ovf-settings.service network-online.target postgresql.service redis-server.service
+# Ordering, and the reason cloud-final.service is deliberately absent from it,
+# is explained in netbox-bootstrap.service - the same constraint applies here.
+After=ovf-settings.service network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 RequiresMountsFor=/srv/netbox
 Before=netbox.service netbox-rq.service nginx.service

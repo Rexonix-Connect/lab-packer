@@ -1,5 +1,11 @@
-
 name: Test VM Templates
+
+# The umbrella over the per-template test workflows. Each template has its own
+# workflow under .github/workflows/test_<template>.yml and can be run on its
+# own; this runs any combination of them from one place, and is what Rebuild All
+# VM Templates calls.
+#
+# Adding a template means adding its workflow, one input here and one job below.
 
 on:
   workflow_dispatch:
@@ -63,9 +69,9 @@ on:
         description: Minutes to wait for the NetBox appliance to finish its first-boot bootstrap
         type: number
         required: false
-        default: 10
+        default: 20
       collect_diagnostics:
-        description: On failure, log in to a Linux guest and dump its boot and service state
+        description: Seed a login on Linux guests, check they booted cleanly, and dump state on failure
         type: boolean
         required: false
         default: true
@@ -138,9 +144,9 @@ on:
         description: Minutes to wait for the NetBox appliance to finish its first-boot bootstrap
         type: number
         required: false
-        default: 10
+        default: 20
       collect_diagnostics:
-        description: On failure, log in to a Linux guest and dump its boot and service state
+        description: Seed a login on Linux guests, check they booted cleanly, and dump state on failure
         type: boolean
         required: false
         default: true
@@ -154,358 +160,117 @@ permissions:
   contents: read
 
 jobs:
-  # Turns the per-template checkboxes into the test matrix, so unticking a
-  # template means its job is never created rather than created and skipped.
-  # This is the only place that maps a template to its repository variable.
-  setup:
+  # Unticking every template must fail the run. Each job below is guarded by its
+  # own input, and a workflow whose jobs all skip reports success - a green run
+  # that tested nothing is worse than no run at all.
+  guard:
     runs-on: ${{ vars.RUNNER_LABELS }}
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      count: ${{ steps.select.outputs.count }}
     steps:
-      - name: Select templates
-        id: select
+      - name: Check at least one template was selected
         env:
-          UBUNTU_22_04_SERVER: ${{ inputs.test_ubuntu_22_04_server }}
-          UBUNTU_22_04_DESKTOP: ${{ inputs.test_ubuntu_22_04_desktop }}
-          UBUNTU_24_04_SERVER: ${{ inputs.test_ubuntu_24_04_server }}
-          UBUNTU_24_04_DESKTOP: ${{ inputs.test_ubuntu_24_04_desktop }}
-          UBUNTU_24_04_SERVER_HARDENED: ${{ inputs.test_ubuntu_24_04_server_hardened }}
-          NETBOX_APPLIANCE: ${{ inputs.test_netbox_appliance }}
-          WINDOWS_SERVER_2019: ${{ inputs.test_windows_server_2019 }}
-          WINDOWS_SERVER_2022: ${{ inputs.test_windows_server_2022 }}
+          SELECTED: >-
+            ${{ inputs.test_ubuntu_22_04_server
+             || inputs.test_ubuntu_22_04_desktop
+             || inputs.test_ubuntu_24_04_server
+             || inputs.test_ubuntu_24_04_desktop
+             || inputs.test_ubuntu_24_04_server_hardened
+             || inputs.test_netbox_appliance
+             || inputs.test_windows_server_2019
+             || inputs.test_windows_server_2022 }}
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-
-          # (input env var, matrix name, repository variable, guest family)
-          TEMPLATES = [
-              ("UBUNTU_22_04_SERVER", "ubuntu-22-04-server",
-               "UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME", "linux"),
-              ("UBUNTU_22_04_DESKTOP", "ubuntu-22-04-desktop",
-               "UBUNTU_22_04_DESKTOP_X64_VM_TEMPLATE_NAME", "linux"),
-              ("UBUNTU_24_04_SERVER", "ubuntu-24-04-server",
-               "UBUNTU_24_04_SERVER_X64_VM_TEMPLATE_NAME", "linux"),
-              ("UBUNTU_24_04_DESKTOP", "ubuntu-24-04-desktop",
-               "UBUNTU_24_04_DESKTOP_X64_VM_TEMPLATE_NAME", "linux"),
-              ("UBUNTU_24_04_SERVER_HARDENED", "ubuntu-24-04-server-hardened",
-               "UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME", "linux"),
-              ("NETBOX_APPLIANCE", "netbox-appliance",
-               "NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME", "linux"),
-              ("WINDOWS_SERVER_2019", "windows-server-2019",
-               "WINDOWS_SERVER_2019_X64_VM_TEMPLATE_NAME", "windows"),
-              ("WINDOWS_SERVER_2022", "windows-server-2022",
-               "WINDOWS_SERVER_2022_X64_VM_TEMPLATE_NAME", "windows"),
-          ]
-
-          # Workflow inputs arrive as the strings "true"/"false", never as
-          # booleans, so this compares strings rather than testing truthiness -
-          # the string "false" is truthy in Python.
-          include = [
-              {"name": name, "template_var": variable, "family": family}
-              for env_name, name, variable, family in TEMPLATES
-              if os.environ.get(env_name, "true") == "true"
-          ]
-
-          if not include:
-              raise SystemExit(
-                  "No templates selected. Tick at least one test_* input;"
-                  " a run that tests nothing would report success."
-              )
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
-              handle.write("matrix=%s\n" % json.dumps({"include": include}))
-              handle.write("count=%d\n" % len(include))
-
-          print("Testing %d of %d templates:" % (len(include), len(TEMPLATES)))
-          for entry in include:
-              print("  %s" % entry["name"])
-          skipped = [t[1] for t in TEMPLATES
-                     if t[1] not in {e["name"] for e in include}]
-          if skipped:
-              print("Skipping: %s" % ", ".join(skipped))
-          PY
-
-  test:
-    needs: setup
-    runs-on: ${{ vars.RUNNER_LABELS }}
-    # Matrix entries run one after another on a single self-hosted runner, and
-    # the appliance additionally waits out its first-boot bootstrap.
-    timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
-    name: Test ${{ matrix.name }}
-    env:
-      GOVC_URL: ${{ secrets.VCENTER_HOST }}
-      GOVC_USERNAME: ${{ secrets.VCENTER_USER }}
-      GOVC_PASSWORD: ${{ secrets.VCENTER_PASS }}
-      GOVC_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
-      GOVC_DATACENTER: ${{ vars.VCENTER_DATACENTER_NAME }}
-      GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
-      GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
-      LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
-      TEMPLATE_NAME: ${{ vars[matrix.template_var] }}
-      VM_NAME: testvm-${{ matrix.name }}-${{ github.run_id }}
-      DIAG_USER: diag
-      DIAG_KEY_NAME: testvm-diag-${{ matrix.name }}
-    steps:
-      - name: Install govc
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -sSfL https://github.com/vmware/govmomi/releases/download/v0.55.1/govc_Linux_x86_64.tar.gz | tar -xz -C "$HOME/.local/bin" govc
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/govc" version
-
-      - name: Deploy test VM from template
-        run: |
-          echo "Deploying '${TEMPLATE_NAME}' from library '${LIBRARY_NAME}' as '${VM_NAME}' ..."
-          govc library.deploy "/${LIBRARY_NAME}/${TEMPLATE_NAME}" "${VM_NAME}"
-
-      # library.deploy leaves the VM powered off, which is the only window in
-      # which guestinfo can be seeded. cloud-init's VMware datasource is in
-      # every Linux template's datasource_list, so this creates an account the
-      # diagnostics step can log in with if the test later fails - without it,
-      # a failed appliance tells us nothing but "no answer on 443".
-      #
-      # "default" is kept in the users list so the normal deploy-form account
-      # behaviour is unchanged; this only adds an account beside it.
-      - name: Seed a diagnostics account
-        if: ${{ matrix.family == 'linux' && inputs.collect_diagnostics }}
-        run: |
-          rm -f "${RUNNER_TEMP}/${DIAG_KEY_NAME}" "${RUNNER_TEMP}/${DIAG_KEY_NAME}.pub"
-          ssh-keygen -q -t ed25519 -N '' -C "testvm-diagnostics" -f "${RUNNER_TEMP}/${DIAG_KEY_NAME}"
-          userdata="$(cat <<EOF
-          #cloud-config
-          users:
-            - default
-            - name: ${DIAG_USER}
-              shell: /bin/bash
-              groups: [adm, sudo, systemd-journal]
-              lock_passwd: true
-              sudo: ["ALL=(ALL) NOPASSWD:ALL"]
-              ssh_authorized_keys:
-                - "$(cat "${RUNNER_TEMP}/${DIAG_KEY_NAME}.pub")"
-          EOF
-          )"
-          userdata_b64="$(printf '%s' "${userdata}" | base64 -w0)"
-          govc vm.change -vm "${VM_NAME}" \
-            -e "guestinfo.userdata=${userdata_b64}" \
-            -e "guestinfo.userdata.encoding=base64"
-          echo "Seeded the '${DIAG_USER}' account for failure diagnostics."
-
-      - name: Power on and verify the guest
-        run: |
-          govc vm.power -on "${VM_NAME}"
-          echo "Waiting up to ${{ inputs.ip_timeout }} for VMware Tools to report an IP address ..."
-          ip="$(govc vm.ip -wait '${{ inputs.ip_timeout }}' "${VM_NAME}")"
-          if [ -z "${ip}" ]; then
-            echo "Guest did not report an IP address within the timeout."
+          if [ "${SELECTED}" != 'true' ]; then
+            echo "No templates selected. Tick at least one test_* input;"
+            echo "a run that tests nothing would report success."
             exit 1
           fi
-          echo "Guest IP: ${ip}"
-          echo "GUEST_IP=${ip}" >> "$GITHUB_ENV"
-          tools="$(govc object.collect -s "vm/${VM_NAME}" guest.toolsRunningStatus)"
-          echo "VMware Tools status: ${tools}"
-          [ "${tools}" = "guestToolsRunning" ]
-          echo "Guest hostname: $(govc object.collect -s "vm/${VM_NAME}" guest.hostName)"
+          echo "At least one template selected."
 
-      - name: Verify the vApp deploy form schema
-        run: |
-          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)
-          val = data[0].get("val") if data else None
-          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
-          if [ -z "${props}" ]; then
-            echo "::warning::${TEMPLATE_NAME} has no vApp configuration (template predates the deploy form); skipping schema check."
-            exit 0
-          fi
-          echo "vApp properties on the deployed VM:"
-          echo "${props}"
-          for key in hostname username public-keys password user-data network.ip4 network.gw4 network.ip6 network.gw6 network.dns network.domain; do
-            if ! echo "${props}" | grep -qx "${key}"; then
-              echo "Missing vApp property: ${key}"
-              exit 1
-            fi
-          done
-          echo "All deploy form properties survived the export/deploy chain."
+  ubuntu-22-04-server:
+    needs: guard
+    if: ${{ inputs.test_ubuntu_22_04_server }}
+    uses: ./.github/workflows/test_ubuntu_22_04_server.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-      # The appliance's form carries NetBox fields on top of the shared eleven,
-      # and they only get there if set-vapp-descriptors.py ran with the
-      # descriptor file. A missing id means the build silently shipped a
-      # template nobody can configure at deploy time.
-      - name: Verify the NetBox deploy form properties
-        if: matrix.name == 'netbox-appliance'
-        run: |
-          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)
-          val = data[0].get("val") if data else None
-          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
-          for key in netbox.fqdn netbox.time-zone netbox.admin-username netbox.admin-email \
-                     netbox.admin-password netbox.metrics-allow netbox.tls-cert netbox.tls-key \
-                     netbox.db-host netbox.db-name netbox.db-user netbox.db-password \
-                     netbox.redis-host netbox.redis-password; do
-            if ! echo "${props}" | grep -qx "${key}"; then
-              echo "Missing NetBox deploy form property: ${key}"
-              exit 1
-            fi
-          done
-          echo "All NetBox deploy form properties are present."
+  ubuntu-22-04-desktop:
+    needs: guard
+    if: ${{ inputs.test_ubuntu_22_04_desktop }}
+    uses: ./.github/workflows/test_ubuntu_22_04_desktop.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-      # NetBox, its database and its backups live on a second disk so that
-      # their growth cannot fill the 60 GB root. That disk is attached through
-      # the vCenter API rather than declared in the Packer source, so it is
-      # worth confirming it survived the export and deploy.
-      - name: Verify the appliance data disk
-        if: matrix.name == 'netbox-appliance'
-        run: |
-          govc device.info -vm "${VM_NAME}" -json 'disk-*' | python3 -c '
-          import json, sys
-          disks = sorted(
-              (d["capacityInKB"] // (1024 * 1024), d["deviceInfo"]["label"])
-              for d in json.load(sys.stdin)["devices"])
-          for size, label in disks:
-              print("%s: %d GB" % (label, size))
-          if len(disks) != 2:
-              sys.exit("expected 2 disks (60 GB root + data disk), found %d" % len(disks))
-          if disks[0][0] < 50:
-              sys.exit("smallest disk is %d GB; the root disk should be 60 GB" % disks[0][0])
-          if disks[1][0] < 50:
-              sys.exit("data disk is only %d GB" % disks[1][0])
-          print("Root and data disks both present.")'
+  ubuntu-24-04-server:
+    needs: guard
+    if: ${{ inputs.test_ubuntu_24_04_server }}
+    uses: ./.github/workflows/test_ubuntu_24_04_server.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-      # Deployed with an empty form, the appliance has to generate its own
-      # identity and serve NetBox over HTTPS unaided. This is the check that
-      # distinguishes "the VM booted" from "the appliance works".
-      - name: Verify NetBox is serving
-        if: ${{ matrix.name == 'netbox-appliance' && inputs.netbox_http_check }}
-        run: |
-          echo "Waiting up to ${{ inputs.netbox_timeout_minutes }} minutes for NetBox at https://${GUEST_IP}/ ..."
-          deadline=$(( $(date +%s) + ${{ inputs.netbox_timeout_minutes }} * 60 ))
-          code=''
-          while [ "$(date +%s)" -lt "${deadline}" ]; do
-            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/login/" || true)"
-            [ "${code}" = '200' ] && break
-            sleep 15
-          done
-          if [ "${code}" != '200' ]; then
-            echo "NetBox did not serve its login page (last HTTP status: ${code:-none})."
-            exit 1
-          fi
-          echo "Login page: HTTP 200"
+  ubuntu-24-04-desktop:
+    needs: guard
+    if: ${{ inputs.test_ubuntu_24_04_desktop }}
+    uses: ./.github/workflows/test_ubuntu_24_04_desktop.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-          redirect="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://${GUEST_IP}/" || true)"
-          [ "${redirect}" = '301' ] || { echo "Plain HTTP returned ${redirect}, expected 301"; exit 1; }
-          echo "HTTP redirect: 301"
+  ubuntu-24-04-server-hardened:
+    needs: guard
+    if: ${{ inputs.test_ubuntu_24_04_server_hardened }}
+    uses: ./.github/workflows/test_ubuntu_24_04_server_hardened.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-          api="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/api/" || true)"
-          [ "${api}" = '403' ] || { echo "Unauthenticated /api/ returned ${api}, expected 403"; exit 1; }
-          echo "API authentication: enforced"
+  netbox-appliance:
+    needs: guard
+    if: ${{ inputs.test_netbox_appliance }}
+    uses: ./.github/workflows/test_netbox_appliance.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      netbox_http_check: ${{ inputs.netbox_http_check }}
+      netbox_timeout_minutes: ${{ inputs.netbox_timeout_minutes }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-          metrics="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/metrics" || true)"
-          [ "${metrics}" = '403' ] || { echo "/metrics returned ${metrics}; it must be denied when no allowlist was deployed"; exit 1; }
-          echo "Metrics: denied by default"
+  windows-server-2019:
+    needs: guard
+    if: ${{ inputs.test_windows_server_2019 }}
+    uses: ./.github/workflows/test_windows_server_2019.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
-          echo "Certificate generated at first boot:"
-          openssl s_client -connect "${GUEST_IP}:443" </dev/null 2>/dev/null |
-            openssl x509 -noout -subject -dates -ext subjectAltName
-
-      # The point of this step is that a failed run explains itself. Without it
-      # a broken appliance reports nothing but "no answer on 443", and the VM
-      # that could have answered why is already gone.
-      - name: Collect guest diagnostics
-        if: ${{ failure() && matrix.family == 'linux' && inputs.collect_diagnostics }}
-        run: |
-          if [ -z "${GUEST_IP:-}" ]; then
-            echo "::warning::The guest never reported an IP address, so there is nothing to log in to."
-            exit 0
-          fi
-          ssh_opts="-i ${RUNNER_TEMP}/${DIAG_KEY_NAME} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=yes"
-          # shellcheck disable=SC2086
-          if ! ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" true 2>/dev/null; then
-            echo "::warning::Could not log in as ${DIAG_USER}@${GUEST_IP}. cloud-init may not have run, which is itself a finding - use the vCenter console on ${VM_NAME}."
-            exit 0
-          fi
-          # shellcheck disable=SC2086
-          ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" 'sudo -n bash -s' <<'REMOTE'
-          set +e
-          section() { printf '\n::group::%s\n' "$1"; }
-          endsection() { printf '::endgroup::\n'; }
-
-          # netbox-firstboot.py writes its full traceback here on any failure,
-          # so this is the first thing to read.
-          if [ -f /var/lib/netbox-appliance/failed ]; then
-            section 'netbox bootstrap traceback (/var/lib/netbox-appliance/failed)'
-            cat /var/lib/netbox-appliance/failed
-            endsection
-          fi
-
-          section 'failed units'
-          systemctl --no-pager --failed
-          endsection
-
-          section 'appliance and boot units'
-          systemctl --no-pager --full status \
-            netbox-bootstrap netbox-datadisk netbox netbox-rq nginx \
-            postgresql redis-server cloud-final 2>&1 | head -n 200
-          endsection
-
-          section 'journal: bootstrap, data disk, netbox'
-          journalctl --no-pager -b -u netbox-bootstrap -u netbox-datadisk -u netbox -u nginx | tail -n 300
-          endsection
-
-          section 'cloud-init'
-          cloud-init status --long
-          endsection
-
-          section 'appliance state'
-          [ -x /usr/local/sbin/netbox-status ] && /usr/local/sbin/netbox-status
-          ls -la /etc/netbox /etc/netbox/tls /var/lib/netbox-appliance 2>&1
-          endsection
-
-          section 'storage'
-          findmnt /srv/netbox
-          lsblk -o NAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINTS
-          df -h /
-          grep -n 'srv/netbox' /etc/fstab
-          endsection
-
-          section 'listeners'
-          ss -ltnp
-          endsection
-
-          section 'nginx error log'
-          tail -n 50 /var/log/nginx/netbox-error.log /var/log/nginx/error.log 2>&1
-          endsection
-          REMOTE
-
-      - name: Keep the VM for inspection
-        if: ${{ inputs.keep_minutes > 0 }}
-        run: |
-          echo "Keeping '${VM_NAME}' running for ${{ inputs.keep_minutes }} minutes ..."
-          sleep $(( ${{ inputs.keep_minutes }} * 60 ))
-
-      - name: Report the VM kept for inspection
-        if: ${{ failure() && !inputs.destroy_on_failure }}
-        run: |
-          echo "::warning::'${VM_NAME}' (${GUEST_IP:-no IP}) was left running for inspection. Delete it with: govc vm.destroy ${VM_NAME}"
-
-      # Deleted on success and on cancellation; a failure keeps the VM so it
-      # can be examined, unless destroy_on_failure says otherwise.
-      - name: Delete the test VM
-        if: ${{ always() && (success() || cancelled() || inputs.destroy_on_failure) }}
-        run: |
-          if govc vm.info "${VM_NAME}" 2>/dev/null | grep -q "${VM_NAME}"; then
-            govc vm.destroy "${VM_NAME}"
-            echo "Deleted '${VM_NAME}'."
-          else
-            echo "'${VM_NAME}' was not deployed; nothing to delete."
-          fi
-
-      - name: Remove the diagnostics key
-        if: always()
-        run: |
-          rm -f "${RUNNER_TEMP}/${DIAG_KEY_NAME}" "${RUNNER_TEMP}/${DIAG_KEY_NAME}.pub"
+  windows-server-2022:
+    needs: guard
+    if: ${{ inputs.test_windows_server_2022 }}
+    uses: ./.github/workflows/test_windows_server_2022.yml
+    secrets: inherit
+    with:
+      keep_minutes: ${{ inputs.keep_minutes }}
+      ip_timeout: ${{ inputs.ip_timeout }}
+      collect_diagnostics: ${{ inputs.collect_diagnostics }}
+      destroy_on_failure: ${{ inputs.destroy_on_failure }}
