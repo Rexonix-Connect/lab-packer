@@ -1,0 +1,139 @@
+name: Test Ubuntu 22.04 Server
+
+# One template, one workflow. The shared VM lifecycle lives in the composite
+# actions under .github/actions/, so this file carries only what is specific to
+# ubuntu-22-04-server - which for a base template is the deploy form schema.
+#
+# Test VM Templates calls this, and every other per-template workflow, so the
+# whole set can still be run from one place.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep the test VM running before deletion (0 deletes immediately)
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+      collect_diagnostics:
+        description: Seed a login on the guest, check it booted cleanly, and dump its state on failure
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        description: Delete the test VM even when the test fails (failures otherwise keep it for inspection)
+        type: boolean
+        required: false
+        default: false
+
+  workflow_call:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep the test VM running before deletion (0 deletes immediately)
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+      collect_diagnostics:
+        description: Seed a login on the guest, check it booted cleanly, and dump its state on failure
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        description: Delete the test VM even when the test fails (failures otherwise keep it for inspection)
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    timeout-minutes: 60
+    name: Test ubuntu-22-04-server
+    env:
+      GOVC_URL: ${{ secrets.VCENTER_HOST }}
+      GOVC_USERNAME: ${{ secrets.VCENTER_USER }}
+      GOVC_PASSWORD: ${{ secrets.VCENTER_PASS }}
+      GOVC_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      GOVC_DATACENTER: ${{ vars.VCENTER_DATACENTER_NAME }}
+      GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
+      GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
+      TEMPLATE_NAME: ${{ vars.UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME }}
+      VM_NAME: testvm-ubuntu-22-04-server-${{ github.run_id }}
+    steps:
+      # Needed before any `uses: ./.github/actions/...` resolves.
+      - uses: actions/checkout@v4
+
+      - name: Deploy and power on
+        id: deploy
+        uses: ./.github/actions/deploy-test-vm
+        with:
+          template_name: ${{ vars.UBUNTU_22_04_SERVER_X64_VM_TEMPLATE_NAME }}
+          library_name: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          vm_name: ${{ env.VM_NAME }}
+          family: linux
+          ip_timeout: ${{ inputs.ip_timeout }}
+          seed_diagnostics: ${{ inputs.collect_diagnostics }}
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-22-04-server
+
+      # Before anything template-specific: did the guest actually finish
+      # booting? A dropped systemd job or a cloud-init that never completes is
+      # invisible to every check below, and fails them all for the wrong reason.
+      - name: Verify the guest booted cleanly
+        if: ${{ inputs.collect_diagnostics }}
+        uses: ./.github/actions/verify-guest-boot
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-22-04-server
+
+      - name: Verify the vApp deploy form schema
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          if [ -z "${props}" ]; then
+            echo "::warning::${TEMPLATE_NAME} has no vApp configuration (template predates the deploy form); skipping schema check."
+            exit 0
+          fi
+          echo "vApp properties on the deployed VM:"
+          echo "${props}"
+          for key in hostname username public-keys password user-data network.ip4 network.gw4 network.ip6 network.gw6 network.dns network.domain; do
+            if ! echo "${props}" | grep -qx "${key}"; then
+              echo "Missing vApp property: ${key}"
+              exit 1
+            fi
+          done
+          echo "All deploy form properties survived the export/deploy chain."
+
+      - name: Collect guest diagnostics
+        if: ${{ failure() && inputs.collect_diagnostics }}
+        uses: ./.github/actions/collect-vm-diagnostics
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          vm_name: ${{ env.VM_NAME }}
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-22-04-server
+
+      - name: Clean up
+        if: always()
+        uses: ./.github/actions/cleanup-test-vm
+        with:
+          vm_name: ${{ env.VM_NAME }}
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          keep_minutes: ${{ inputs.keep_minutes }}
+          destroy_on_failure: ${{ inputs.destroy_on_failure }}
+          diag_key: ${{ runner.temp }}/testvm-diag-ubuntu-22-04-server
+          job_status: ${{ job.status }}

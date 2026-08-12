@@ -1,0 +1,70 @@
+name: Clean up a test VM
+description: >
+  Hold the VM for inspection if asked, then delete it. A failed run keeps its VM
+  so it can be examined - deleting the only evidence is how three rounds of this
+  appliance's diagnosis were wasted - unless destroy_on_failure says otherwise.
+
+inputs:
+  vm_name:
+    description: Name of the deployed VM
+    required: true
+  guest_ip:
+    description: Address of the guest, for the message
+    required: false
+    default: ''
+  keep_minutes:
+    description: Minutes to hold the VM before deleting it
+    required: false
+    default: '0'
+  destroy_on_failure:
+    description: Delete the VM even when the job failed (true/false)
+    required: false
+    default: 'false'
+  diag_key:
+    description: Private key to remove from the runner
+    required: true
+  job_status:
+    description: The calling job's status so far, from job.status
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Keep the VM for inspection
+      if: ${{ inputs.keep_minutes != '0' }}
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm_name }}
+        KEEP_MINUTES: ${{ inputs.keep_minutes }}
+      run: |
+        echo "Keeping '${VM_NAME}' running for ${KEEP_MINUTES} minutes ..."
+        sleep $(( KEEP_MINUTES * 60 ))
+
+    - name: Report the VM kept for inspection
+      if: ${{ inputs.job_status == 'failure' && inputs.destroy_on_failure != 'true' }}
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm_name }}
+        GUEST_IP: ${{ inputs.guest_ip }}
+      run: |
+        echo "::warning::'${VM_NAME}' (${GUEST_IP:-no IP}) was left running for inspection. Delete it with: govc vm.destroy ${VM_NAME}"
+
+    - name: Delete the test VM
+      if: ${{ inputs.job_status != 'failure' || inputs.destroy_on_failure == 'true' }}
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm_name }}
+      run: |
+        if govc vm.info "${VM_NAME}" 2>/dev/null | grep -q "${VM_NAME}"; then
+          govc vm.destroy "${VM_NAME}"
+          echo "Deleted '${VM_NAME}'."
+        else
+          echo "'${VM_NAME}' was not deployed; nothing to delete."
+        fi
+
+    - name: Remove the diagnostics key
+      shell: bash
+      env:
+        DIAG_KEY: ${{ inputs.diag_key }}
+      run: |
+        rm -f "${DIAG_KEY}" "${DIAG_KEY}.pub"

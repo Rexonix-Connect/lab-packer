@@ -1,0 +1,108 @@
+name: Collect guest diagnostics
+description: >
+  On failure, log in to a Linux guest and dump its boot and service state into
+  the workflow log. The point is that a failed run explains itself: without it a
+  broken appliance reports nothing but "no answer on 443", and the VM that could
+  have answered why is already gone.
+
+inputs:
+  guest_ip:
+    description: Address of the guest, empty if it never reported one
+    required: false
+    default: ''
+  vm_name:
+    description: Name of the VM, for the message pointing at the console
+    required: true
+  diag_user:
+    description: Account seeded by deploy-test-vm
+    required: false
+    default: diag
+  diag_key:
+    description: Private key for that account
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Dump guest state
+      shell: bash
+      env:
+        GUEST_IP: ${{ inputs.guest_ip }}
+        VM_NAME: ${{ inputs.vm_name }}
+        DIAG_USER: ${{ inputs.diag_user }}
+        DIAG_KEY: ${{ inputs.diag_key }}
+      run: |
+        if [ -z "${GUEST_IP}" ]; then
+          echo "::warning::The guest never reported an IP address, so there is nothing to log in to."
+          exit 0
+        fi
+        ssh_opts="-i ${DIAG_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=yes"
+        # shellcheck disable=SC2086
+        if ! ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" true 2>/dev/null; then
+          echo "::warning::Could not log in as ${DIAG_USER}@${GUEST_IP}. cloud-init may not have run, which is itself a finding - use the vCenter console on ${VM_NAME}."
+          exit 0
+        fi
+        # shellcheck disable=SC2086
+        ssh ${ssh_opts} "${DIAG_USER}@${GUEST_IP}" 'sudo -n bash -s' <<'REMOTE'
+        set +e
+        section() { printf '\n::group::%s\n' "$1"; }
+        endsection() { printf '::endgroup::\n'; }
+
+        # netbox-firstboot.py writes its full traceback here on any failure,
+        # so this is the first thing to read.
+        if [ -f /var/lib/netbox-appliance/failed ]; then
+          section 'netbox bootstrap traceback (/var/lib/netbox-appliance/failed)'
+          cat /var/lib/netbox-appliance/failed
+          endsection
+        fi
+
+        # A unit whose start job was deleted to break a cycle logs nothing of
+        # its own, so the cycle messages are the only trace it leaves.
+        section 'dependency cycles'
+        journalctl -b --no-pager | grep -iE 'ordering cycle|deleted to break' || echo 'none'
+        endsection
+
+        section 'boot state'
+        systemctl is-system-running
+        systemd-analyze 2>&1 | head -n 2
+        systemctl list-jobs --no-pager
+        endsection
+
+        section 'failed units'
+        systemctl --no-pager --failed
+        endsection
+
+        section 'appliance and boot units'
+        systemctl --no-pager --full status \
+          netbox-bootstrap netbox-datadisk netbox netbox-rq nginx \
+          postgresql redis-server cloud-final 2>&1 | head -n 200
+        endsection
+
+        section 'journal: bootstrap, data disk, netbox'
+        journalctl --no-pager -b -u netbox-bootstrap -u netbox-datadisk -u netbox -u nginx | tail -n 300
+        endsection
+
+        section 'cloud-init'
+        cloud-init status --long
+        endsection
+
+        section 'appliance state'
+        [ -x /usr/local/sbin/netbox-status ] && /usr/local/sbin/netbox-status
+        ls -la /etc/netbox /etc/netbox/tls /var/lib/netbox-appliance 2>&1
+        endsection
+
+        section 'storage'
+        findmnt /srv/netbox
+        lsblk -o NAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINTS
+        df -h /
+        grep -n 'srv/netbox' /etc/fstab
+        endsection
+
+        section 'listeners'
+        ss -ltnp
+        endsection
+
+        section 'nginx error log'
+        tail -n 50 /var/log/nginx/netbox-error.log /var/log/nginx/error.log 2>&1
+        endsection
+        REMOTE

@@ -1,0 +1,126 @@
+name: Deploy a test VM
+description: >
+  Deploy a template from the content library, optionally seed a diagnostics
+  account through guestinfo, power it on and wait for VMware Tools to report an
+  address. Every per-template test workflow starts with this.
+
+inputs:
+  template_name:
+    description: Name of the content library item to deploy
+    required: true
+  library_name:
+    description: Content library holding the template
+    required: true
+  vm_name:
+    description: Name to give the deployed VM
+    required: true
+  family:
+    description: Guest family, linux or windows
+    required: true
+  ip_timeout:
+    description: How long to wait for an IP address (for example 15m)
+    required: false
+    default: 15m
+  seed_diagnostics:
+    description: Seed a Linux diagnostics account through guestinfo (true/false)
+    required: false
+    default: 'true'
+  diag_user:
+    description: Account name to seed
+    required: false
+    default: diag
+  diag_key:
+    description: Path for the generated ed25519 key pair
+    required: true
+
+outputs:
+  guest_ip:
+    description: The address VMware Tools reported for the guest
+    value: ${{ steps.power.outputs.guest_ip }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install govc
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        curl -sSfL https://github.com/vmware/govmomi/releases/download/v0.55.1/govc_Linux_x86_64.tar.gz | tar -xz -C "$HOME/.local/bin" govc
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/govc" version
+
+    - name: Deploy test VM from template
+      shell: bash
+      env:
+        TEMPLATE_NAME: ${{ inputs.template_name }}
+        LIBRARY_NAME: ${{ inputs.library_name }}
+        VM_NAME: ${{ inputs.vm_name }}
+      run: |
+        if [ -z "${TEMPLATE_NAME}" ]; then
+          echo "No template name was given. The repository variable for this template is unset."
+          exit 1
+        fi
+        echo "Deploying '${TEMPLATE_NAME}' from library '${LIBRARY_NAME}' as '${VM_NAME}' ..."
+        govc library.deploy "/${LIBRARY_NAME}/${TEMPLATE_NAME}" "${VM_NAME}"
+
+    # library.deploy leaves the VM powered off, which is the only window in
+    # which guestinfo can be seeded. cloud-init's VMware datasource is in every
+    # Linux template's datasource_list, so this creates an account the boot
+    # health check and the diagnostics dump can log in with.
+    #
+    # It is also a test in its own right: if this account does not exist after
+    # boot, cloud-init did not apply the deploy-time user-data, which means the
+    # deploy form is not reaching the guest either.
+    #
+    # "default" is kept in the users list so the normal deploy-form account
+    # behaviour is unchanged; this only adds an account beside it.
+    - name: Seed a diagnostics account
+      if: ${{ inputs.family == 'linux' && inputs.seed_diagnostics == 'true' }}
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm_name }}
+        DIAG_USER: ${{ inputs.diag_user }}
+        DIAG_KEY: ${{ inputs.diag_key }}
+      run: |
+        rm -f "${DIAG_KEY}" "${DIAG_KEY}.pub"
+        ssh-keygen -q -t ed25519 -N '' -C "testvm-diagnostics" -f "${DIAG_KEY}"
+        userdata="$(cat <<EOF
+        #cloud-config
+        users:
+          - default
+          - name: ${DIAG_USER}
+            shell: /bin/bash
+            groups: [adm, sudo, systemd-journal]
+            lock_passwd: true
+            sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+            ssh_authorized_keys:
+              - "$(cat "${DIAG_KEY}.pub")"
+        EOF
+        )"
+        userdata_b64="$(printf '%s' "${userdata}" | base64 -w0)"
+        govc vm.change -vm "${VM_NAME}" \
+          -e "guestinfo.userdata=${userdata_b64}" \
+          -e "guestinfo.userdata.encoding=base64"
+        echo "Seeded the '${DIAG_USER}' account."
+
+    - name: Power on and verify the guest
+      id: power
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm_name }}
+        IP_TIMEOUT: ${{ inputs.ip_timeout }}
+      run: |
+        govc vm.power -on "${VM_NAME}"
+        echo "Waiting up to ${IP_TIMEOUT} for VMware Tools to report an IP address ..."
+        ip="$(govc vm.ip -wait "${IP_TIMEOUT}" "${VM_NAME}")"
+        if [ -z "${ip}" ]; then
+          echo "Guest did not report an IP address within the timeout."
+          exit 1
+        fi
+        echo "Guest IP: ${ip}"
+        echo "guest_ip=${ip}" >> "$GITHUB_OUTPUT"
+        echo "GUEST_IP=${ip}" >> "$GITHUB_ENV"
+        tools="$(govc object.collect -s "vm/${VM_NAME}" guest.toolsRunningStatus)"
+        echo "VMware Tools status: ${tools}"
+        [ "${tools}" = "guestToolsRunning" ]
+        echo "Guest hostname: $(govc object.collect -s "vm/${VM_NAME}" guest.hostName)"

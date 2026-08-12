@@ -118,17 +118,27 @@ Applies the same security baseline, known-CVE kernel module mitigations, verific
 
 [![Test VM Templates](../../actions/workflows/test_vm_templates.yml/badge.svg)](../../actions/workflows/test_vm_templates.yml)
 
-Smoke-tests the VM templates in the content library: for each selected template a matrix job deploys a test VM named `testvm-<template>-<run id>`, powers it on, and verifies the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported.
+Smoke-tests the VM templates in the content library: for each selected template a test VM named `testvm-<template>-<run id>` is deployed, powered on, and checked for whether the guest actually works — VMware Tools comes up, the guest obtains an IP address within the timeout, and the guest hostname is reported.
 
-**Each template has its own checkbox, all ticked by default**, so a run tests everything unless you say otherwise. Untick the rest to re-test a single image after a fix, instead of sitting through the other seven on a single self-hosted runner; the unticked jobs are never created rather than created and skipped. Unticking everything fails the run rather than reporting success for a run that tested nothing.
+**One workflow per template.** Each template has its own workflow — `Test Ubuntu 24.04 Server`, `Test NetBox Appliance` and so on — runnable on its own from the Actions tab, because what is worth checking diverges sharply between an OS template and an appliance. This workflow is the umbrella over them: it keeps one checkbox per template, all ticked by default, and calls the individual workflows. Untick the rest to re-test a single image after a fix instead of sitting through the other seven on a single self-hosted runner. Unticking everything fails the run rather than reporting success for a run that tested nothing.
 
-The checks themselves need no credentials — templates ship with the provisioning account removed or disabled, and a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all eight `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the matrix jobs execute one after another.
+The shared VM lifecycle lives in composite actions under `.github/actions/` — `deploy-test-vm`, `verify-guest-boot`, `collect-vm-diagnostics`, `cleanup-test-vm` — so the per-template workflows carry only their own assertions rather than eight copies of the same deploy-and-destroy code.
 
-**On failure, a Linux guest is asked what went wrong.** Before power-on the job seeds a throwaway `diag` account through the VMware guestinfo datasource (a per-run ed25519 key that never leaves the runner, authorizing an account that only exists on a VM about to be deleted). If a check then fails, it logs in and dumps the boot and service state into the workflow log in collapsible sections: for the NetBox appliance that starts with `/var/lib/netbox-appliance/failed`, where the first-boot bootstrap writes its full traceback, followed by the failed units, the `netbox-bootstrap` journal, cloud-init status, the `/srv/netbox` mount, the listening sockets and the nginx error log. The account is not created at all when `collect_diagnostics` is off, and if cloud-init never ran there will be no account to log in as — which is itself a finding, and the job says so and points at the console.
+The checks themselves need no credentials — templates ship with the provisioning account removed or disabled, and a booted guest with running tools and DHCP networking is the template's health signal. The `govc` CLI (pinned release, downloaded at run time) performs all vCenter operations, using the same repository variables and secrets as the build workflows, including all eight `*_VM_TEMPLATE_NAME` variables. On a single self-hosted runner the jobs execute one after another.
+
+**Every Linux guest must prove it booted cleanly** before any template-specific check runs. Before power-on a throwaway `diag` account is seeded through the VMware guestinfo datasource (a per-run ed25519 key that never leaves the runner, authorizing an account that only exists on a VM about to be deleted). Then:
+
+- **The login itself must succeed.** The account is created by cloud-init from guestinfo user-data — the same channel the vApp deploy form uses — so failing to log in means deploy-time configuration is not reaching the guest at all. This is a failure, not a warning.
+- **cloud-init must reach `done`**, within a bounded wait. `cloud-init status --wait` is deliberately run under `timeout`: a guest whose `cloud-final.service` job was dropped sits at `running` for the life of the machine, and an unbounded wait would hang instead of reporting it.
+- **The journal must contain no ordering cycle.** systemd breaks a dependency cycle by *deleting* start jobs, and the units it deletes log nothing at all — no failure, no message, nothing under `systemctl status`. Grepping the journal is the only way to see it from outside.
+
+These run before the template-specific checks so a guest that never finished booting fails here, with a reason, rather than twenty minutes later as an HTTP timeout.
+
+**On failure, a Linux guest is asked what went wrong.** It logs in and dumps the boot and service state into the workflow log in collapsible sections: dependency cycles and pending jobs first, then failed units, and for the NetBox appliance `/var/lib/netbox-appliance/failed` where the first-boot bootstrap writes its full traceback, the `netbox-bootstrap` journal, cloud-init status, the `/srv/netbox` mount, the listening sockets and the nginx error log. `collect_diagnostics` turns off both the seeding and the boot checks together.
 
 **A failed test keeps its VM.** Successful and cancelled runs delete theirs as before; a failure leaves it running and prints the `govc vm.destroy` line to clean it up, so the evidence outlives the run. Set `destroy_on_failure` to delete regardless.
 
-The NetBox appliance gets two extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: its fourteen `netbox.*` deploy-form properties must be present, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
+The NetBox appliance gets three extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: its fourteen `netbox.*` deploy-form properties must be present, both disks must have survived the export and deploy, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
 
 #### Workflow inputs
 
@@ -136,9 +146,11 @@ The NetBox appliance gets two extra checks, because "the VM booted" is a much we
 - `keep_minutes` - minutes to keep each **successful** test VM running before deletion; defaults to `0`. Failures keep their VM regardless, so this only pads runs that passed
 - `ip_timeout` - how long to wait for VMware Tools to report an IP address, e.g. `15m`; defaults to `15m`
 - `netbox_http_check` - check that the NetBox appliance actually serves HTTPS; defaults to `true`, turn it off when the runner has no route to the VM network
-- `collect_diagnostics` - on failure, log in to a Linux guest and dump its boot and service state; defaults to `true`
+- `collect_diagnostics` - seed a login on Linux guests, check they booted cleanly, and dump their state on failure; defaults to `true`
 - `destroy_on_failure` - delete the test VM even when the test fails; defaults to `false`
-- `netbox_timeout_minutes` - minutes to wait for the appliance's first-boot bootstrap before failing; defaults to `10`
+- `netbox_timeout_minutes` - minutes to wait for the appliance's first-boot bootstrap before failing; defaults to `20`
+
+The per-template workflows take the same inputs, minus the `test_<template>` checkboxes, and the `netbox_*` ones only where they apply.
 
 ### Rebuild All VM Templates
 
@@ -350,7 +362,13 @@ First-boot diagnostics: `cloud-init status --long` and `/var/log/cloud-init.log`
 
 ### First boot
 
-**First boot takes several minutes.** `netbox-bootstrap.service` waits on cloud-init and `network-online.target` before `netbox-firstboot.py` starts at all, and the run itself migrates the database and creates the superuser. Until it finishes, `netbox-status` says `bootstrapping, not ready yet` and nothing is listening — expected rather than a fault. Afterwards it gains a `Serving` line taken from a loopback request to `/login/`, which is what catches an appliance whose units are up but which is not answering.
+**First boot takes several minutes.** `netbox-bootstrap.service` waits on `network-online.target` before `netbox-firstboot.py` starts at all, and the run itself migrates the database and creates the superuser. Until it finishes, `netbox-status` says `bootstrapping, not ready yet` and nothing is listening — expected rather than a fault. Afterwards it gains a `Serving` line taken from a loopback request to `/login/`, which is what catches an appliance whose units are up but which is not answering.
+
+> **The appliance units must never be ordered after a late cloud-init unit.** `netbox-bootstrap.service` and `netbox-reconcile.service` are pulled into `multi-user.target`, and `cloud-final.service` is ordered *after* `multi-user.target`; adding `After=cloud-final.service` to either closes a dependency cycle. systemd does not report that as a failure — it breaks the cycle by **deleting jobs**, and the units whose jobs it deletes log nothing whatsoever. It dropped the bootstrap's start job, taking `nginx`, `netbox` and `netbox-rq` with it since they `Requires=` it, and it dropped `cloud-final.service` too, so cloud-init never finished and the deploy form stopped being applied. The appliance booted in thirteen seconds, reported no failed units, and served nothing. `install-firstboot.sh` now fails the build if either unit acquires such an ordering, and the test workflow greps every guest's journal for `ordering cycle`.
+>
+> Nothing is lost by leaving it out: cloud-init sets the host name and creates users in its **init** stage, which completes before `network-online.target`, and the deploy form's network and identity are applied earlier still by the base image's `ovf-settings.service`.
+>
+> If a deployed appliance is inert, `netbox-status` now says `BOOTSTRAP NEVER RAN` and points at `journalctl -b | grep -i 'ordering cycle'`.
 
 `netbox-bootstrap.service` runs once, before `netbox`, `netbox-rq` and `nginx`, which all `Requires=` it. A failed bootstrap therefore leaves the appliance visibly down rather than serving a half-configured NetBox — `systemctl status netbox-bootstrap` is red, the MOTD says so, and the traceback is in `journalctl -u netbox-bootstrap -b` and `/var/lib/netbox-appliance/failed`. Fix the cause and re-run it with `systemctl start netbox-bootstrap`; it is idempotent.
 

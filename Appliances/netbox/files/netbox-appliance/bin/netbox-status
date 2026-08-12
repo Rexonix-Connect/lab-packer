@@ -20,6 +20,18 @@ if [ ! -f "${STATE_DIR}/bootstrapped" ]; then
 		echo "NetBox appliance: BOOTSTRAP FAILED"
 		echo "  journalctl -u netbox-bootstrap -b   (details in ${STATE_DIR}/failed)"
 		echo "  retry: systemctl start netbox-bootstrap"
+	elif [ "$(systemctl is-system-running 2>/dev/null || true)" != 'initializing' ] &&
+		[ "$(systemctl is-system-running 2>/dev/null || true)" != 'starting' ] &&
+		[ "$(systemctl is-active netbox-bootstrap 2>/dev/null || true)" = 'inactive' ]; then
+		# Boot is over, the unit is not running and never finished. It was not
+		# skipped either - its condition holds while this marker is missing. So
+		# its start job was dropped before it ran, which is what systemd does to
+		# break an ordering cycle, silently as far as the unit is concerned.
+		echo "NetBox appliance: BOOTSTRAP NEVER RAN"
+		echo "  Boot has finished but netbox-bootstrap is inactive, so its start"
+		echo "  job was dropped rather than executed. Check for a dependency cycle:"
+		echo "    journalctl -b | grep -i 'ordering cycle'"
+		echo "  Start it by hand with: systemctl start netbox-bootstrap"
 	else
 		echo "NetBox appliance: bootstrapping, not ready yet"
 		echo "  journalctl -u netbox-bootstrap -bf"
