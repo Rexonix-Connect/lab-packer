@@ -55,7 +55,7 @@ on:
         default: true
 
       keep_minutes:
-        description: Minutes to keep each successful test VM running before deletion (0 deletes immediately)
+        description: Minutes to hold each test VM before cleanup decides its fate (0 acts immediately; a failed test keeps its VM regardless, so this only delays the job)
         type: number
         required: false
         default: 0
@@ -82,16 +82,22 @@ permissions:
 # Rebuilds the selected templates in sequence by calling the individual build
 # workflows; on a single self-hosted runner expect several hours end to end.
 #
-# Each build is followed immediately by that template's own test, which runs
-# alongside the next build rather than waiting for the whole queue. A broken
-# image is therefore reported within minutes of being built instead of hours
-# later, and a run that dies halfway still leaves the templates it did finish
-# tested. The builds stay serialized - only their tests overlap - so the load
-# on vCenter is unchanged.
+# Each build is followed immediately by that template's own test rather than by
+# the whole queue of builds. A broken image is therefore reported close to when
+# it was built instead of hours later, and a run that dies halfway still leaves
+# the templates it did finish tested.
 #
-# The chain is `needs:` on the previous BUILD, guarded by `!= 'failure'` rather
-# than `== 'success'`, so unticking a template skips it without stopping
-# everything behind it.
+# Whether a test actually overlaps the next build depends on runner capacity: a
+# test job only needs its own build, so it is free to run alongside the next
+# one, but on a single runner it simply queues. When it does overlap, one test
+# VM exists while a build runs - fewer concurrent VMs than the old shape, which
+# started all eight tests together at the end, but not literally unchanged
+# load. The builds themselves stay strictly serialized either way.
+#
+# The chain is `needs:` on the previous BUILD, and accepts that build having
+# been skipped as well as having succeeded - otherwise unticking a template
+# would stall everything behind it. The two states are named explicitly
+# rather than written as `!= 'failure'`, which would also admit 'cancelled'.
 #
 # GitHub documents a ten-input maximum for workflow_dispatch, but it is not
 # enforced: test_vm_templates.yml has carried fourteen and dispatched fine.
@@ -105,7 +111,34 @@ permissions:
 # hardened library item, which is deliberate: an appliance built on the last
 # known-good base beats no appliance at all.
 jobs:
+  # Unticking every template must fail the run. Each job below is guarded by its
+  # own input, and a workflow whose jobs all skip reports success - a green run
+  # that rebuilt nothing is worse than no run at all. Test VM Templates has the
+  # same guard for the same reason.
+  guard:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    steps:
+      - name: Check at least one template was selected
+        env:
+          SELECTED: >-
+            ${{ inputs.rebuild_ubuntu_22_04_server
+             || inputs.rebuild_ubuntu_22_04_desktop
+             || inputs.rebuild_ubuntu_24_04_server
+             || inputs.rebuild_ubuntu_24_04_desktop
+             || inputs.rebuild_ubuntu_24_04_server_hardened
+             || inputs.rebuild_netbox_appliance
+             || inputs.rebuild_windows_server_2019
+             || inputs.rebuild_windows_server_2022 }}
+        run: |
+          if [ "${SELECTED}" != 'true' ]; then
+            echo "No templates selected. Tick at least one rebuild_* input;"
+            echo "a run that rebuilds nothing would report success."
+            exit 1
+          fi
+          echo "At least one template selected."
+
   ubuntu-22-04-server:
+    needs: guard
     if: ${{ inputs.rebuild_ubuntu_22_04_server }}
     uses: ./.github/workflows/build_ubuntu_22_04_server_vm_template.yml
     secrets: inherit
@@ -122,7 +155,7 @@ jobs:
 
   ubuntu-22-04-desktop:
     needs: ubuntu-22-04-server
-    if: ${{ !cancelled() && inputs.rebuild_ubuntu_22_04_desktop && (inputs.continue_on_failure || needs.ubuntu-22-04-server.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_22_04_desktop && (inputs.continue_on_failure || needs.ubuntu-22-04-server.result == 'success' || needs.ubuntu-22-04-server.result == 'skipped') }}
     uses: ./.github/workflows/build_ubuntu_22_04_desktop_vm_template.yml
     secrets: inherit
 
@@ -138,7 +171,7 @@ jobs:
 
   ubuntu-24-04-server:
     needs: ubuntu-22-04-desktop
-    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server && (inputs.continue_on_failure || needs.ubuntu-22-04-desktop.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server && (inputs.continue_on_failure || needs.ubuntu-22-04-desktop.result == 'success' || needs.ubuntu-22-04-desktop.result == 'skipped') }}
     uses: ./.github/workflows/build_ubuntu_24_04_server_vm_template.yml
     secrets: inherit
 
@@ -154,7 +187,7 @@ jobs:
 
   ubuntu-24-04-desktop:
     needs: ubuntu-24-04-server
-    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_desktop && (inputs.continue_on_failure || needs.ubuntu-24-04-server.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_desktop && (inputs.continue_on_failure || needs.ubuntu-24-04-server.result == 'success' || needs.ubuntu-24-04-server.result == 'skipped') }}
     uses: ./.github/workflows/build_ubuntu_24_04_desktop_vm_template.yml
     secrets: inherit
 
@@ -170,7 +203,7 @@ jobs:
 
   ubuntu-24-04-server-hardened:
     needs: ubuntu-24-04-desktop
-    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server_hardened && (inputs.continue_on_failure || needs.ubuntu-24-04-desktop.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server_hardened && (inputs.continue_on_failure || needs.ubuntu-24-04-desktop.result == 'success' || needs.ubuntu-24-04-desktop.result == 'skipped') }}
     uses: ./.github/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml
     secrets: inherit
 
@@ -187,7 +220,7 @@ jobs:
   # Clones the hardened library item, so it has to follow that build.
   netbox-appliance:
     needs: ubuntu-24-04-server-hardened
-    if: ${{ !cancelled() && inputs.rebuild_netbox_appliance && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_netbox_appliance && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result == 'success' || needs.ubuntu-24-04-server-hardened.result == 'skipped') }}
     uses: ./.github/workflows/build_netbox_appliance_vm_template.yml
     secrets: inherit
 
@@ -204,7 +237,7 @@ jobs:
 
   windows-server-2019:
     needs: netbox-appliance
-    if: ${{ !cancelled() && inputs.rebuild_windows_server_2019 && (inputs.continue_on_failure || needs.netbox-appliance.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_windows_server_2019 && (inputs.continue_on_failure || needs.netbox-appliance.result == 'success' || needs.netbox-appliance.result == 'skipped') }}
     uses: ./.github/workflows/build_windows_server_2019_vm_template.yml
     secrets: inherit
 
@@ -220,7 +253,7 @@ jobs:
 
   windows-server-2022:
     needs: windows-server-2019
-    if: ${{ !cancelled() && inputs.rebuild_windows_server_2022 && (inputs.continue_on_failure || needs.windows-server-2019.result != 'failure') }}
+    if: ${{ !cancelled() && inputs.rebuild_windows_server_2022 && (inputs.continue_on_failure || needs.windows-server-2019.result == 'success' || needs.windows-server-2019.result == 'skipped') }}
     uses: ./.github/workflows/build_windows_server_2022_vm_template.yml
     secrets: inherit
 

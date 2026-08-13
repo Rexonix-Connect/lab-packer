@@ -162,7 +162,9 @@ Rebuilds the selected templates **in sequence** — Ubuntu 22.04 server, 22.04 d
 
 **Each template has its own checkbox**, all ticked by default, so a run rebuilds everything unless you say otherwise. The chain depends on the previous *build* rather than requiring it to have succeeded, so unticking a template skips it without stopping everything behind it.
 
-**Each build is tested as soon as it finishes**, by calling that template's own test workflow, rather than all tests queueing behind the last build. The test runs alongside the next build — the builds themselves stay serialized, so the load on vCenter is unchanged. A broken image is therefore reported within minutes of being built instead of hours later, and a run that dies halfway still leaves the templates it did finish tested. A template whose build failed is not tested, since that would silently test the previous library item.
+**Each build is tested as soon as it finishes**, by calling that template's own test workflow, rather than all tests queueing behind the last build. A broken image is therefore reported close to when it was built instead of hours later, and a run that dies halfway still leaves the templates it did finish tested. A template whose build failed is not tested, since that would silently test the previous library item.
+
+Whether a test overlaps the next build depends on runner capacity: a test job needs only its own build, so it is free to run alongside the next one, but on a single runner it queues instead. When it does overlap, one test VM exists while a build runs — fewer concurrent VMs than the old shape, which started all eight tests together at the end, though not literally unchanged load. The builds themselves stay strictly serialized either way.
 
 The NetBox appliance is placed directly after the hardened template because it is *cloned from* that library item rather than installed from an ISO, so the order is a real dependency rather than a convention. With `continue_on_failure` it still runs after a failed hardened build — it then clones the previous hardened library item, which is deliberate: an appliance built on the last known-good base beats no appliance at all.
 
@@ -171,7 +173,8 @@ The NetBox appliance is placed directly after the hardened template because it i
 - `rebuild_<template>` - one checkbox per template (`rebuild_ubuntu_22_04_server`, `rebuild_ubuntu_22_04_desktop`, `rebuild_ubuntu_24_04_server`, `rebuild_ubuntu_24_04_desktop`, `rebuild_ubuntu_24_04_server_hardened`, `rebuild_netbox_appliance`, `rebuild_windows_server_2019`, `rebuild_windows_server_2022`); all default to `true`
 - `continue_on_failure` - keep rebuilding the remaining templates when one build fails (the failed template's old library item stays in place); defaults to `false`, which stops the chain at the first failure
 - `run_tests` - test each template as soon as it is built; defaults to `true`
-- `keep_minutes`, `netbox_timeout_minutes`, `collect_diagnostics`, `destroy_on_failure` - passed through to each template's test
+- `keep_minutes`, `collect_diagnostics`, `destroy_on_failure` - passed through to every template's test
+- `netbox_timeout_minutes` - passed to the NetBox appliance test only; no other template's test accepts it
 
 GitHub's documentation gives `workflow_dispatch` a maximum of ten inputs, but that is not enforced in practice — `test_vm_templates.yml` carries fourteen and dispatches normally. This workflow stops at fourteen for the same reason: fourteen is what is demonstrably known to work here. `ip_timeout` and `netbox_http_check` are the two left out; run a single template's test workflow to set those.
 
