@@ -171,8 +171,9 @@ The NetBox appliance is placed directly after the hardened template because it i
 - `rebuild_<template>` - one checkbox per template (`rebuild_ubuntu_22_04_server`, `rebuild_ubuntu_22_04_desktop`, `rebuild_ubuntu_24_04_server`, `rebuild_ubuntu_24_04_desktop`, `rebuild_ubuntu_24_04_server_hardened`, `rebuild_netbox_appliance`, `rebuild_windows_server_2019`, `rebuild_windows_server_2022`); all default to `true`
 - `continue_on_failure` - keep rebuilding the remaining templates when one build fails (the failed template's old library item stays in place); defaults to `false`, which stops the chain at the first failure
 - `run_tests` - test each template as soon as it is built; defaults to `true`
+- `keep_minutes`, `netbox_timeout_minutes`, `collect_diagnostics`, `destroy_on_failure` - passed through to each template's test
 
-Those ten fill `workflow_dispatch`'s maximum of ten inputs exactly, so the per-template tests run with their own defaults. To tune a test (`keep_minutes`, timeouts, diagnostics) run **Test VM Templates**, or a single template's test workflow, separately.
+GitHub's documentation gives `workflow_dispatch` a maximum of ten inputs, but that is not enforced in practice — `test_vm_templates.yml` carries fourteen and dispatches normally. This workflow stops at fourteen for the same reason: fourteen is what is demonstrably known to work here. `ip_timeout` and `netbox_http_check` are the two left out; run a single template's test workflow to set those.
 
 The test flow additionally verifies on every deployed test VM that the vApp deploy form schema (all `hostname`/`username`/`network.*`/… properties) survived the OVF export/deploy chain, warning instead of failing for templates built before the deploy form existed.
 
