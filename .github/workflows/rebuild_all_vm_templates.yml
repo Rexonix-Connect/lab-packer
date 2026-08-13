@@ -1,16 +1,55 @@
-
 name: Rebuild All VM Templates
 
 on:
   workflow_dispatch:
     inputs:
+      rebuild_ubuntu_22_04_server:
+        description: Rebuild the Ubuntu 22.04 server template
+        type: boolean
+        required: false
+        default: true
+      rebuild_ubuntu_22_04_desktop:
+        description: Rebuild the Ubuntu 22.04 desktop template
+        type: boolean
+        required: false
+        default: true
+      rebuild_ubuntu_24_04_server:
+        description: Rebuild the Ubuntu 24.04 server template
+        type: boolean
+        required: false
+        default: true
+      rebuild_ubuntu_24_04_desktop:
+        description: Rebuild the Ubuntu 24.04 desktop template
+        type: boolean
+        required: false
+        default: true
+      rebuild_ubuntu_24_04_server_hardened:
+        description: Rebuild the Ubuntu 24.04 server hardened template
+        type: boolean
+        required: false
+        default: true
+      rebuild_netbox_appliance:
+        description: Rebuild the NetBox appliance template
+        type: boolean
+        required: false
+        default: true
+      rebuild_windows_server_2019:
+        description: Rebuild the Windows Server 2019 template
+        type: boolean
+        required: false
+        default: true
+      rebuild_windows_server_2022:
+        description: Rebuild the Windows Server 2022 template
+        type: boolean
+        required: false
+        default: true
       continue_on_failure:
         description: Keep rebuilding the remaining templates when one build fails
         type: boolean
         required: false
         default: false
       run_tests:
-        description: Run the Test VM Templates flow after the rebuilds
+        description: Test each template as soon as it is built
         type: boolean
         required: false
         default: true
@@ -19,8 +58,24 @@ permissions:
   contents: read
   packages: read
 
-# Rebuilds all templates in sequence by calling the individual build
+# Rebuilds the selected templates in sequence by calling the individual build
 # workflows; on a single self-hosted runner expect several hours end to end.
+#
+# Each build is followed immediately by that template's own test, which runs
+# alongside the next build rather than waiting for the whole queue. A broken
+# image is therefore reported within minutes of being built instead of hours
+# later, and a run that dies halfway still leaves the templates it did finish
+# tested. The builds stay serialized - only their tests overlap - so the load
+# on vCenter is unchanged.
+#
+# The chain is `needs:` on the previous BUILD, guarded by `!= 'failure'` rather
+# than `== 'success'`, so unticking a template skips it without stopping
+# everything behind it. workflow_dispatch allows at most ten inputs, which the
+# eight checkboxes plus the two switches exactly fill; the per-template tests
+# therefore run with their own defaults. To tune them (keep_minutes, timeouts,
+# diagnostics) run Test VM Templates, or a single template's test workflow,
+# separately.
+#
 # The NetBox appliance is cloned from the hardened template rather than built
 # from an ISO, so it runs directly after it. With continue_on_failure it will
 # still run after a failed hardened build - it then clones the previous
@@ -28,54 +83,97 @@ permissions:
 # known-good base beats no appliance at all.
 jobs:
   ubuntu-22-04-server:
+    if: ${{ inputs.rebuild_ubuntu_22_04_server }}
     uses: ./.github/workflows/build_ubuntu_22_04_server_vm_template.yml
+    secrets: inherit
+
+  test-ubuntu-22-04-server:
+    needs: ubuntu-22-04-server
+    if: ${{ !cancelled() && inputs.run_tests && needs.ubuntu-22-04-server.result == 'success' }}
+    uses: ./.github/workflows/test_ubuntu_22_04_server.yml
     secrets: inherit
 
   ubuntu-22-04-desktop:
     needs: ubuntu-22-04-server
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-22-04-server.result == 'success') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_22_04_desktop && (inputs.continue_on_failure || needs.ubuntu-22-04-server.result != 'failure') }}
     uses: ./.github/workflows/build_ubuntu_22_04_desktop_vm_template.yml
+    secrets: inherit
+
+  test-ubuntu-22-04-desktop:
+    needs: ubuntu-22-04-desktop
+    if: ${{ !cancelled() && inputs.run_tests && needs.ubuntu-22-04-desktop.result == 'success' }}
+    uses: ./.github/workflows/test_ubuntu_22_04_desktop.yml
     secrets: inherit
 
   ubuntu-24-04-server:
     needs: ubuntu-22-04-desktop
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-22-04-desktop.result == 'success') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server && (inputs.continue_on_failure || needs.ubuntu-22-04-desktop.result != 'failure') }}
     uses: ./.github/workflows/build_ubuntu_24_04_server_vm_template.yml
+    secrets: inherit
+
+  test-ubuntu-24-04-server:
+    needs: ubuntu-24-04-server
+    if: ${{ !cancelled() && inputs.run_tests && needs.ubuntu-24-04-server.result == 'success' }}
+    uses: ./.github/workflows/test_ubuntu_24_04_server.yml
     secrets: inherit
 
   ubuntu-24-04-desktop:
     needs: ubuntu-24-04-server
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-server.result == 'success') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_desktop && (inputs.continue_on_failure || needs.ubuntu-24-04-server.result != 'failure') }}
     uses: ./.github/workflows/build_ubuntu_24_04_desktop_vm_template.yml
+    secrets: inherit
+
+  test-ubuntu-24-04-desktop:
+    needs: ubuntu-24-04-desktop
+    if: ${{ !cancelled() && inputs.run_tests && needs.ubuntu-24-04-desktop.result == 'success' }}
+    uses: ./.github/workflows/test_ubuntu_24_04_desktop.yml
     secrets: inherit
 
   ubuntu-24-04-server-hardened:
     needs: ubuntu-24-04-desktop
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-desktop.result == 'success') }}
+    if: ${{ !cancelled() && inputs.rebuild_ubuntu_24_04_server_hardened && (inputs.continue_on_failure || needs.ubuntu-24-04-desktop.result != 'failure') }}
     uses: ./.github/workflows/build_ubuntu_24_04_server_hardened_vm_template.yml
+    secrets: inherit
+
+  test-ubuntu-24-04-server-hardened:
+    needs: ubuntu-24-04-server-hardened
+    if: ${{ !cancelled() && inputs.run_tests && needs.ubuntu-24-04-server-hardened.result == 'success' }}
+    uses: ./.github/workflows/test_ubuntu_24_04_server_hardened.yml
     secrets: inherit
 
   # Clones the hardened library item, so it has to follow that build.
   netbox-appliance:
     needs: ubuntu-24-04-server-hardened
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result == 'success') }}
+    if: ${{ !cancelled() && inputs.rebuild_netbox_appliance && (inputs.continue_on_failure || needs.ubuntu-24-04-server-hardened.result != 'failure') }}
     uses: ./.github/workflows/build_netbox_appliance_vm_template.yml
     secrets: inherit
 
-  windows-2019:
+  test-netbox-appliance:
     needs: netbox-appliance
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.netbox-appliance.result == 'success') }}
+    if: ${{ !cancelled() && inputs.run_tests && needs.netbox-appliance.result == 'success' }}
+    uses: ./.github/workflows/test_netbox_appliance.yml
+    secrets: inherit
+
+  windows-server-2019:
+    needs: netbox-appliance
+    if: ${{ !cancelled() && inputs.rebuild_windows_server_2019 && (inputs.continue_on_failure || needs.netbox-appliance.result != 'failure') }}
     uses: ./.github/workflows/build_windows_server_2019_vm_template.yml
     secrets: inherit
 
-  windows-2022:
-    needs: windows-2019
-    if: ${{ !cancelled() && (inputs.continue_on_failure || needs.windows-2019.result == 'success') }}
+  test-windows-server-2019:
+    needs: windows-server-2019
+    if: ${{ !cancelled() && inputs.run_tests && needs.windows-server-2019.result == 'success' }}
+    uses: ./.github/workflows/test_windows_server_2019.yml
+    secrets: inherit
+
+  windows-server-2022:
+    needs: windows-server-2019
+    if: ${{ !cancelled() && inputs.rebuild_windows_server_2022 && (inputs.continue_on_failure || needs.windows-server-2019.result != 'failure') }}
     uses: ./.github/workflows/build_windows_server_2022_vm_template.yml
     secrets: inherit
 
-  test:
-    needs: windows-2022
-    if: ${{ !cancelled() && inputs.run_tests && (inputs.continue_on_failure || needs.windows-2022.result == 'success') }}
-    uses: ./.github/workflows/test_vm_templates.yml
+  test-windows-server-2022:
+    needs: windows-server-2022
+    if: ${{ !cancelled() && inputs.run_tests && needs.windows-server-2022.result == 'success' }}
+    uses: ./.github/workflows/test_windows_server_2022.yml
     secrets: inherit
