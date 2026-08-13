@@ -66,6 +66,45 @@ else
 	unhealthy=1
 fi
 
+# Patch reality, not patch intent. unattended-upgrades is enabled in the image,
+# but at a customer site it may have no route to the archive - directly, or
+# through a proxy nobody told the appliance about. That failure is otherwise
+# completely silent: the timer runs, finds nothing, and the appliance looks
+# healthy while patching nothing for months. All three checks read local state
+# only, because this drives the MOTD and must not block on the network.
+stamp=/var/lib/apt/periodic/update-success-stamp
+if [ -f "${stamp}" ]; then
+	age_days=$(( ( $(date +%s) - $(date -r "${stamp}" +%s) ) / 86400 ))
+	if [ "${age_days}" -le 2 ]; then
+		reach="archive reachable"
+	else
+		reach="LAST REACHED THE ARCHIVE ${age_days} DAYS AGO - check egress/proxy"
+		unhealthy=1
+	fi
+else
+	reach="NEVER REACHED THE ARCHIVE - check egress/proxy"
+	unhealthy=1
+fi
+
+# apt-check reads the local apt cache and prints "updates;security".
+security=''
+if [ -x /usr/lib/update-notifier/apt-check ]; then
+	counts="$(/usr/lib/update-notifier/apt-check 2>&1 || true)"
+	case "${counts}" in
+	*';'*) security="${counts#*;}" ;;
+	esac
+fi
+if [ -n "${security}" ] && [ "${security}" != '0' ]; then
+	echo "  Updates   ${security} security update(s) pending (${reach})"
+else
+	echo "  Updates   none pending (${reach})"
+fi
+
+if [ -f /var/run/reboot-required ]; then
+	echo "  Reboot    REQUIRED to finish applying updates (kernel or libraries)"
+	unhealthy=1
+fi
+
 latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
 if [ -n "${latest}" ]; then
 	echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"

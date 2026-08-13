@@ -391,6 +391,20 @@ It reads the deploy form through the base image's own `/usr/local/sbin/ovf-setti
 
 On every subsequent boot `netbox-reconcile.service` re-derives the host names and, if the certificate is one the appliance generated, reissues it when the addresses change. It never touches secrets, the database or the superuser — so cloning a *running* appliance gives you a working copy of it, which is what cloning a running system should mean.
 
+### Updating a deployed appliance
+
+Three layers, and they do not want the same treatment.
+
+**Ubuntu security patches** apply themselves: `unattended-upgrades` is enabled in the image. What the image does *not* do is reboot, so a kernel or libssl update installs and then sits inert until someone reboots. `netbox-status` reports both halves — pending security updates and whether a reboot is required — because on an appliance holding a database, choosing the reboot window is the operator's call, not the machine's.
+
+It also reports **how long since the archive was last reached**. This matters more than it sounds: at a customer site the appliance may have no route out, or a proxy nobody told it about, and the failure is otherwise completely silent — the timer runs, finds nothing, and the appliance looks healthy while patching nothing for months. `LAST REACHED THE ARCHIVE 47 DAYS AGO` is the line that catches that.
+
+**NetBox releases** use `netbox-upgrade vX.Y.Z`, which takes a backup first (migrations are not reversible), checks out the tag, runs NetBox's own `upgrade.sh`, restarts, verifies the appliance answers on 443, and prints the rollback commands. `--reinstall` rebuilds the virtual environment at the current tag, for when `local_requirements.txt` changed. Both need to reach GitHub and PyPI.
+
+**Everything else — a NetBox major version, an Ubuntu release upgrade, a new appliance image — is a redeploy, not an upgrade.** Deploy the new template alongside, `netbox-restore` the most recent backup into it, verify, cut over, keep the old VM until you are sure. The appliance is built for this: the template carries no identity, the deploy form reconfigures everything at first boot, and `netbox-reconcile` re-derives host names and certificates when the address changes. In an air-gapped network this is the *only* upgrade path, since neither the archive nor PyPI is reachable.
+
+When something is wrong at a site you cannot reach, ask for `netbox-support-bundle`. It writes one reviewable tarball and states plainly that it contains no secrets, which is usually what the customer wants to know before sending it.
+
 ### Credentials
 
 A generated admin password is written to `/root/netbox-credentials.txt` (mode 600) and echoed on the **local console** through `/etc/issue.d/60-netbox.issue`, because a freshly deployed appliance may have no other way in. It is deliberately never written to `/etc/issue.net`, which the hardened base uses as the pre-authentication SSH banner. After the first login:
@@ -406,7 +420,8 @@ All of them need root and live in `/usr/local/sbin`:
 
 | Command | Purpose |
 | --- | --- |
-| `netbox-status` | Version, URL, database mode, TLS mode, service health, **whether it is actually serving** (a loopback request to `/login/`, which is a different question from whether systemd started the units) and the last backup. Also drives the MOTD |
+| `netbox-status` | Version, URL, database mode, TLS mode, service health, **whether it is actually serving** (a loopback request to `/login/`, which is a different question from whether systemd started the units), **patch state** (pending security updates, reboot required, and how long since the archive was last reached) and the last backup. Also drives the MOTD |
+| `netbox-support-bundle` | One tarball in `/var/tmp` with status, versions, patch state, unit state, journals, cloud-init, storage, listeners and the nginx log — for a site nobody outside can reach. `appliance.json` is redacted by key; the TLS private key and `/root/netbox-credentials.txt` are never read |
 | `netbox-manage …` | Any NetBox management command inside the venv, as the `netbox` account (`netbox-manage nbshell`, `netbox-manage housekeeping`, `netbox-manage changepassword`) |
 | `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/srv/netbox/backups`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |
 | `netbox-restore <timestamp>` | Restores a backup pair, applies any pending migrations, restarts and health-checks. Confirm-prompted |

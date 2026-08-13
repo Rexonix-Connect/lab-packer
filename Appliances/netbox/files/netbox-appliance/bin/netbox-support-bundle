@@ -1,0 +1,153 @@
+#!/bin/bash
+# Collect everything needed to diagnose this appliance from the outside, into
+# one file the operator can send on.
+#
+# This exists because the appliance runs in networks nobody else can reach:
+# there is no phone-home and no inbound access, so the only diagnostic channel
+# is a person on site running one command. It therefore has to gather enough to
+# be useful without a second round trip, and it has to be safe to email.
+#
+# Nothing secret goes in. /etc/netbox/appliance.json holds SECRET_KEY, the API
+# token peppers and any external database password, so it is redacted by key
+# rather than included; the TLS private key and the generated credentials file
+# are never read at all.
+set -uo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "netbox-support-bundle: run as root (needs the journal and unit state)" >&2
+	exit 1
+fi
+
+stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+host="$(hostname -s 2>/dev/null || echo appliance)"
+work="$(mktemp -d)"
+out="/var/tmp/netbox-support-${host}-${stamp}.tar.gz"
+trap 'rm -rf "${work}"' EXIT
+dir="${work}/netbox-support-${host}-${stamp}"
+mkdir -p "${dir}"
+
+say() { printf '  %s\n' "$1"; }
+cap() { # cap <file> <description>; command on stdin
+	local f="${dir}/$1"
+	shift
+	{
+		printf '=== %s ===\n' "$*"
+		cat
+	} >>"${f}" 2>&1
+}
+
+echo "netbox-support-bundle: collecting ..."
+
+say 'appliance status'
+netbox-status 2>&1 | cap status.txt 'netbox-status' || true
+
+say 'versions and host'
+{
+	printf 'collected: %s\n' "${stamp}"
+	printf 'hostname: %s\n' "$(hostname -f 2>/dev/null || hostname)"
+	cat /etc/os-release
+	printf 'kernel: %s\n' "$(uname -r)"
+	printf 'uptime: %s\n' "$(uptime -p 2>/dev/null || true)"
+	printf 'netbox: %s\n' "$(git -C /opt/netbox describe --tags --always 2>/dev/null || echo unknown)"
+	printf 'appliance image built: %s\n' "$(stat -c %y /usr/local/sbin/netbox-firstboot.py 2>/dev/null || echo unknown)"
+} 2>&1 | cap versions.txt 'versions'
+
+say 'patch state'
+{
+	printf 'reboot-required: %s\n' "$([ -f /var/run/reboot-required ] && echo yes || echo no)"
+	printf 'last successful apt update: %s\n' \
+		"$(stat -c %y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || echo never)"
+	printf 'apt-check (updates;security): %s\n' \
+		"$(/usr/lib/update-notifier/apt-check 2>&1 || echo unavailable)"
+	printf '\n--- unattended-upgrades timer ---\n'
+	systemctl status apt-daily-upgrade.timer --no-pager 2>&1 | head -n 15
+	printf '\n--- proxy configuration seen by apt ---\n'
+	grep -rils proxy /etc/apt/apt.conf.d/ 2>/dev/null || echo 'none'
+	printf '\n--- proxy environment ---\n'
+	grep -is proxy /etc/environment 2>/dev/null || echo 'none'
+} 2>&1 | cap patching.txt 'patch state'
+
+say 'services and boot'
+{
+	systemctl is-system-running
+	printf '\n--- failed units ---\n'
+	systemctl --no-pager --failed
+	printf '\n--- dependency cycles (silent when they happen) ---\n'
+	journalctl -b --no-pager | grep -iE 'ordering cycle|deleted to break' || echo none
+	printf '\n--- appliance units ---\n'
+	systemctl --no-pager --full status \
+		netbox-bootstrap netbox-reconcile netbox-datadisk netbox netbox-rq \
+		nginx postgresql redis-server netbox-backup.timer 2>&1 | head -n 200
+} 2>&1 | cap services.txt 'services'
+
+say 'journals'
+journalctl --no-pager -b -u netbox-bootstrap -u netbox-reconcile -u netbox \
+	-u netbox-rq -u nginx 2>&1 | tail -n 500 | cap journal.txt 'journal (this boot)'
+
+say 'first-boot outcome'
+{
+	if [ -f /var/lib/netbox-appliance/failed ]; then
+		printf '--- /var/lib/netbox-appliance/failed ---\n'
+		cat /var/lib/netbox-appliance/failed
+	else
+		echo 'no failure file; the bootstrap reported success'
+	fi
+	ls -la /var/lib/netbox-appliance /etc/netbox 2>&1
+} 2>&1 | cap bootstrap.txt 'bootstrap'
+
+say 'cloud-init'
+cloud-init status --long 2>&1 | cap cloud-init.txt 'cloud-init status' || true
+
+say 'storage and network'
+{
+	findmnt /srv/netbox
+	printf '\n'
+	df -h / /srv/netbox
+	printf '\n'
+	lsblk -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS
+	printf '\n--- listeners ---\n'
+	ss -ltn
+	printf '\n--- addresses ---\n'
+	ip -brief address
+} 2>&1 | cap storage-network.txt 'storage and network'
+
+say 'nginx errors'
+tail -n 200 /var/log/nginx/netbox-error.log /var/log/nginx/error.log 2>&1 |
+	cap nginx.txt 'nginx error log'
+
+# Redacted, not omitted: the shape of the configuration is usually what is
+# wrong (an FQDN, a database host, whether TLS was supplied), and none of that
+# is secret. The values that are secret never leave the machine.
+say 'configuration (secrets redacted)'
+python3 - <<'PY' 2>&1 | cap configuration.txt 'appliance.json (redacted)'
+import json
+SECRET = ('secret', 'password', 'pepper', 'key', 'token')
+try:
+    data = json.load(open('/etc/netbox/appliance.json'))
+except Exception as exc:                                     # noqa: BLE001
+    print('could not read /etc/netbox/appliance.json: %s' % exc)
+    raise SystemExit(0)
+
+
+def scrub(value, path=''):
+    if isinstance(value, dict):
+        return {k: ('<redacted>'
+                    if any(s in k.lower() for s in SECRET) and value[k]
+                    else scrub(v, k))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub(v, path) for v in value]
+    return value
+
+
+print(json.dumps(scrub(data), indent=2, sort_keys=True))
+PY
+
+tar --create --gzip --file "${out}" -C "${work}" "$(basename "${dir}")"
+chmod 600 "${out}"
+
+echo
+echo "netbox-support-bundle: written to ${out}"
+echo "  It contains no secrets: appliance.json is redacted by key, and the TLS"
+echo "  private key and /root/netbox-credentials.txt are never read."
+echo "  Review it if you like - it is plain text - then send it on."
