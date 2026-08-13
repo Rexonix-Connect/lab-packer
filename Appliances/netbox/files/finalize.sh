@@ -8,6 +8,13 @@
 # by netbox-firstboot.py.
 set -euo pipefail
 
+# Packer does not echo the shutdown command's output, so a failure here is
+# otherwise silent: the build just times out waiting for a power-off that never
+# comes. Put the reason somewhere a human can find it - the VM console, which is
+# visible in vCenter for the fifteen minutes before Packer gives up.
+trap 'rc=$?; msg="finalize.sh FAILED (exit ${rc}) at line ${LINENO}: ${BASH_COMMAND}"; \
+      echo "${msg}" >&2; echo "${msg}" >/dev/console 2>/dev/null || true' ERR
+
 echo '> Stopping the appliance services ...'
 systemctl stop netbox.service netbox-rq.service nginx.service fail2ban.service || true
 systemctl stop postgresql redis-server || true
@@ -55,14 +62,20 @@ if id vagrant >/dev/null 2>&1; then
 		exit 1
 	fi
 fi
-install -m 0644 /dev/stdin /etc/ssh/sshd_config.d/00-no-password-auth.conf <<'SSHD'
+# -D: the directory is not guaranteed to exist. Without it this fails
+# instantly under set -e, and because Packer does not echo the shutdown
+# command's output the build dies 15 minutes later saying only
+# "timeout while waiting for machine to shutdown".
+install -D -m 0644 /dev/stdin /etc/ssh/sshd_config.d/00-no-password-auth.conf <<'SSHD'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 SSHD
 ssh-keygen -A >/dev/null
-if ! sshd -T 2>/dev/null | grep -qx 'passwordauthentication no'; then
+effective="$(sshd -T 2>/dev/null || true)"
+if ! grep -qx 'passwordauthentication no' <<<"${effective}"; then
 	echo '> SSH password authentication is still enabled; refusing to export the template' >&2
-	sshd -T 2>/dev/null | grep -i 'passwordauthentication\|kbdinteractive' >&2
+	grep -iE 'passwordauthentication|kbdinteractive' <<<"${effective}" >&2 || \
+		echo '> sshd -T produced no output at all' >&2
 	exit 1
 fi
 rm -f /etc/ssh/ssh_host_*
