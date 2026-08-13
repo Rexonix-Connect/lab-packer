@@ -11,6 +11,10 @@ set -euo pipefail
 
 BACKUP_DIR=/srv/netbox/backups
 CONFIG=/etc/netbox/appliance.json
+# The physical path, as netbox-backup uses: /opt/netbox is a symlink to
+# /srv/netbox, the archive stores physical paths, and upgrade.sh resolves the
+# symlink when it records the virtual environment location.
+NETBOX_ROOT="$(readlink -f /opt/netbox)"
 
 usage() {
 	echo "usage: netbox-restore <timestamp|dump-file> [--yes]"
@@ -70,6 +74,65 @@ if [ -f "${files}" ]; then
 else
 	echo "netbox-restore: no file archive for ${stamp}; restoring the database only"
 fi
+
+# Plugins, before the database and before anything imports the configuration.
+#
+# The archive restores local_requirements.txt and appliance.json - so PLUGINS
+# comes back - but the plugin packages themselves live in the virtual
+# environment, which on a freshly deployed appliance does not have them. NetBox
+# refuses to start, and even `manage.py migrate` refuses to run, when a plugin
+# named in PLUGINS cannot be imported. Restoring into a new appliance is the
+# supported way to move to a new image or a new NetBox major version, so this
+# is exactly the path that has to work.
+#
+# It happens before pg_restore on purpose: a missing plugin then fails with the
+# database untouched, rather than half-restored and unable to start.
+if [ -s "${NETBOX_ROOT}/local_requirements.txt" ]; then
+	echo "netbox-restore: installing plugin packages from local_requirements.txt ..."
+	if ! "${NETBOX_ROOT}/venv/bin/pip" install --quiet \
+		-r "${NETBOX_ROOT}/local_requirements.txt"; then
+		echo "netbox-restore: could not install the backup's plugin packages." >&2
+		echo "  The database has NOT been touched." >&2
+		echo "  This appliance may have no route to PyPI - check 'netbox-status'." >&2
+		echo "  Either give it one, or deploy an image with these plugins baked in:" >&2
+		sed 's/^/    /' "${NETBOX_ROOT}/local_requirements.txt" >&2
+		exit 1
+	fi
+fi
+
+# Verify rather than assume: local_requirements.txt is the pip name, PLUGINS is
+# the Python module name, and they routinely differ (netbox-bgp / netbox_bgp).
+# A backup whose PLUGINS lists something local_requirements.txt does not
+# install would otherwise fail later, with the database already replaced.
+python3 - "${CONFIG}" "${NETBOX_ROOT}" <<'PY' || exit 1
+import json
+import subprocess
+import sys
+
+config, root = sys.argv[1], sys.argv[2]
+with open(config) as handle:
+    plugins = json.load(handle).get("plugins", [])
+if not plugins:
+    raise SystemExit(0)
+
+missing = []
+for name in plugins:
+    probe = subprocess.run([root + "/venv/bin/python", "-c",
+                            "import %s" % name], capture_output=True)
+    if probe.returncode != 0:
+        missing.append(name)
+
+if missing:
+    sys.stderr.write(
+        "netbox-restore: the backup enables plugins this appliance cannot "
+        "import: %s\n" % ", ".join(missing))
+    sys.stderr.write("  The database has NOT been touched.\n")
+    sys.stderr.write("  Add them to %s/local_requirements.txt and re-run, or\n"
+                     "  remove them from 'plugins' in %s.\n" % (root, config))
+    raise SystemExit(1)
+print("netbox-restore: %d plugin(s) present: %s"
+      % (len(plugins), ", ".join(plugins)))
+PY
 
 echo "netbox-restore: restoring the database ..."
 eval "$(python3 - "${CONFIG}" <<'PY'

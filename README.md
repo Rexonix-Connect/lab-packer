@@ -403,6 +403,19 @@ It also reports **how long since the archive was last reached**. This matters mo
 
 **Everything else — a NetBox major version, an Ubuntu release upgrade, a new appliance image — is a redeploy, not an upgrade.** Deploy the new template alongside, `netbox-restore` the most recent backup into it, verify, cut over, keep the old VM until you are sure. The appliance is built for this: the template carries no identity, the deploy form reconfigures everything at first boot, and `netbox-reconcile` re-derives host names and certificates when the address changes. In an air-gapped network this is the *only* upgrade path, since neither the archive nor PyPI is reachable.
 
+#### Plugins
+
+Plugins are configuration, not file edits: `configuration.py` reads `PLUGINS` and `PLUGINS_CONFIG` out of `/etc/netbox/appliance.json`, and `netbox-reconcile` only ever rewrites `allowed_hosts`, so an operator's plugin set survives reboots and address changes untouched.
+
+Installing one on a running appliance is three steps — add the pip requirement to `/opt/netbox/local_requirements.txt`, run `netbox-upgrade --reinstall` to rebuild the virtual environment and apply the plugin's migrations, then add its **module** name to `plugins` (and any settings to `plugins_config`) in `appliance.json` and restart `netbox` and `netbox-rq`. The pip name and the module name routinely differ (`netbox-bgp` installs `netbox_bgp`), and getting that wrong is the usual way to end up with a NetBox that refuses to start.
+
+`netbox-backup` captures both halves — `local_requirements.txt` and `appliance.json` — so **the plugin set is part of every backup**, and `netbox-restore` reinstalls the packages before it touches the database. If it cannot (no route to PyPI, or a plugin named in `PLUGINS` that `local_requirements.txt` does not install) it stops with the database untouched and says which plugin and why, rather than restoring and leaving an appliance that will not start.
+
+Two things to plan for:
+
+- **A NetBox upgrade can outrun a plugin.** Plugins declare a supported NetBox range, and a release that moves past it stops NetBox from starting. `netbox-upgrade` backs up first and verifies the appliance still answers on 443 afterwards, so a broken combination is caught immediately and it prints the rollback — but check your plugins' compatibility before upgrading, not after.
+- **An air-gapped site cannot install plugins at all.** There is no route to PyPI, so the plugin set has to be baked into the image: put the requirements into `local_requirements.txt` during the build and rebuild the template. That is also the cleanest way to make a plugin set reproducible across many customers.
+
 When something is wrong at a site you cannot reach, ask for `netbox-support-bundle`. It writes one reviewable tarball and states plainly that it contains no secrets, which is usually what the customer wants to know before sending it.
 
 ### Credentials
