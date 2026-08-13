@@ -78,8 +78,11 @@ runs:
         # supposed to remove. The same construct read correctly in the workflow
         # this was lifted from, because there the default shell is `bash -e`,
         # without pipefail.
+        # -F because vm_name is an action input: a name containing `.` or `*`
+        # would otherwise match more than itself. `--` so a name starting with
+        # `-` is not read as an option.
         info="$(govc vm.info "${VM_NAME}" 2>/dev/null || true)"
-        if grep -q "${VM_NAME}" <<<"${info}"; then
+        if grep -qF -- "${VM_NAME}" <<<"${info}"; then
           govc vm.destroy "${VM_NAME}"
           echo "Deleted '${VM_NAME}'."
         else
