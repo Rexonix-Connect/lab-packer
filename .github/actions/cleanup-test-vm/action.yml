@@ -70,7 +70,16 @@ runs:
       env:
         VM_NAME: ${{ inputs.vm_name }}
       run: |
-        if govc vm.info "${VM_NAME}" 2>/dev/null | grep -q "${VM_NAME}"; then
+        # No pipeline into `grep -q`. A composite action's `shell: bash` is
+        # `bash --noprofile --norc -e -o pipefail`, and grep -q exits on its
+        # first match, so govc dies of SIGPIPE and pipefail reports the whole
+        # pipeline as failed - precisely when the VM DOES exist. This step then
+        # took the "nothing to delete" branch and leaked every test VM it was
+        # supposed to remove. The same construct read correctly in the workflow
+        # this was lifted from, because there the default shell is `bash -e`,
+        # without pipefail.
+        info="$(govc vm.info "${VM_NAME}" 2>/dev/null || true)"
+        if grep -q "${VM_NAME}" <<<"${info}"; then
           govc vm.destroy "${VM_NAME}"
           echo "Deleted '${VM_NAME}'."
         else
