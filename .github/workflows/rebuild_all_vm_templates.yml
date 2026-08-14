@@ -149,7 +149,11 @@ jobs:
     uses: ./.github/workflows/test_ubuntu_22_04_server.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      # fromJSON, because workflow_dispatch surfaces number inputs as strings
+      # and a called workflow's number-typed input rejects a string outright -
+      # the job then fails to instantiate at all. Run 31791530745 is the proof:
+      # the two booleans in this block passed, the two numbers did not.
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -165,7 +169,7 @@ jobs:
     uses: ./.github/workflows/test_ubuntu_22_04_desktop.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -181,7 +185,7 @@ jobs:
     uses: ./.github/workflows/test_ubuntu_24_04_server.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -197,7 +201,7 @@ jobs:
     uses: ./.github/workflows/test_ubuntu_24_04_desktop.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -213,7 +217,7 @@ jobs:
     uses: ./.github/workflows/test_ubuntu_24_04_server_hardened.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -230,10 +234,10 @@ jobs:
     uses: ./.github/workflows/test_netbox_appliance.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
-      netbox_timeout_minutes: ${{ inputs.netbox_timeout_minutes }}
+      netbox_timeout_minutes: ${{ fromJSON(inputs.netbox_timeout_minutes || '20') }}
 
   windows-server-2019:
     needs: netbox-appliance
@@ -247,7 +251,7 @@ jobs:
     uses: ./.github/workflows/test_windows_server_2019.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
 
@@ -263,6 +267,6 @@ jobs:
     uses: ./.github/workflows/test_windows_server_2022.yml
     secrets: inherit
     with:
-      keep_minutes: ${{ inputs.keep_minutes }}
+      keep_minutes: ${{ fromJSON(inputs.keep_minutes || '0') }}
       collect_diagnostics: ${{ inputs.collect_diagnostics }}
       destroy_on_failure: ${{ inputs.destroy_on_failure }}
