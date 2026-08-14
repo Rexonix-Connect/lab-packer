@@ -407,9 +407,20 @@ It also reports **how long since the archive was last reached**. This matters mo
 
 Plugins are configuration, not file edits: `configuration.py` reads `PLUGINS` and `PLUGINS_CONFIG` out of `/etc/netbox/appliance.json`, and `netbox-reconcile` only ever rewrites `allowed_hosts`, so an operator's plugin set survives reboots and address changes untouched.
 
-Installing one on a running appliance is three steps — add the pip requirement to `/opt/netbox/local_requirements.txt`, run `netbox-upgrade --reinstall` to rebuild the virtual environment and apply the plugin's migrations, then add its **module** name to `plugins` (and any settings to `plugins_config`) in `appliance.json` and restart `netbox` and `netbox-rq`. The pip name and the module name routinely differ (`netbox-bgp` installs `netbox_bgp`), and getting that wrong is the usual way to end up with a NetBox that refuses to start.
+Use `netbox-plugin` rather than doing it by hand:
 
-`netbox-backup` captures both halves — `local_requirements.txt` and `appliance.json` — so **the plugin set is part of every backup**, and `netbox-restore` reinstalls the packages before it touches the database. If it cannot (no route to PyPI, or a plugin named in `PLUGINS` that `local_requirements.txt` does not install) it stops with the database untouched and says which plugin and why, rather than restoring and leaving an appliance that will not start.
+```
+netbox-plugin list
+netbox-plugin install netbox-bgp
+netbox-plugin install 'netbox-topology-views==3.8.1'
+netbox-plugin remove netbox_bgp
+```
+
+`install` adds the requirement, installs it, **resolves the module name from the installed distribution's own metadata**, enables it in `PLUGINS`, migrates, restarts and confirms the appliance still serves — reverting the configuration if it does not. That module-name step is the one worth having automated: the pip name and the module name routinely differ, and not by a rule you can guess (`PyYAML` provides `yaml`, not `pyyaml`). Putting the wrong one in `PLUGINS` gives you a NetBox that will not start.
+
+`remove` disables the plugin and drops the requirement, but leaves its tables and data in the database — NetBox has no plugin uninstall that removes them, and dropping them by hand is how people lose data they meant to keep. Settings live under `plugins_config` in `appliance.json`.
+
+`netbox-backup` captures both halves — `local_requirements.txt` and `appliance.json` — alongside the database, `netbox/media` (uploads and device-type images), `netbox/scripts` and `netbox/reports`, so **the plugin set is part of every backup**, and `netbox-restore` reinstalls the packages before it touches the database. If it cannot (no route to PyPI, or a plugin named in `PLUGINS` that `local_requirements.txt` does not install) it stops with the database untouched and says which plugin and why, rather than restoring and leaving an appliance that will not start.
 
 Two things to plan for:
 
@@ -434,6 +445,7 @@ All of them need root and live in `/usr/local/sbin`:
 | Command | Purpose |
 | --- | --- |
 | `netbox-status` | Version, URL, database mode, TLS mode, service health, **whether it is actually serving** (a loopback request to `/login/`, which is a different question from whether systemd started the units), **patch state** (pending security updates, reboot required, and how long since the archive was last reached) and the last backup. Also drives the MOTD |
+| `netbox-plugin` | `list`, `install <pip-requirement>`, `remove <module>`. Resolves the module name from the installed distribution's own metadata rather than guessing from the pip name, backs up first (enabling a plugin applies irreversible migrations), then migrates, restarts and verifies the appliance still serves — reverting the configuration if it does not |
 | `netbox-support-bundle` | One tarball in `/var/tmp` with status, versions, patch state, unit state, journals, cloud-init, storage, listeners and the nginx log — for a site nobody outside can reach. `appliance.json` is redacted by key; the TLS private key and `/root/netbox-credentials.txt` are never read |
 | `netbox-manage …` | Any NetBox management command inside the venv, as the `netbox` account (`netbox-manage nbshell`, `netbox-manage housekeeping`, `netbox-manage changepassword`) |
 | `netbox-backup` | `pg_dump -Fc` plus a tarball of media, scripts, reports, `local_requirements.txt` and `/etc/netbox/appliance.json`, into `/srv/netbox/backups`. Runs nightly via `netbox-backup.timer`; retention is `RETENTION_DAYS` in `/etc/default/netbox-backup`, default 14 |

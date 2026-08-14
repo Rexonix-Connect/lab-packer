@@ -10,7 +10,7 @@ set -euo pipefail
 
 echo '> Installing the operator CLIs ...'
 for tool in netbox-manage netbox-status netbox-credentials netbox-backup netbox-restore \
-	netbox-upgrade netbox-datadisk-grow netbox-support-bundle; do
+	netbox-upgrade netbox-datadisk-grow netbox-support-bundle netbox-plugin; do
 	install -m 0755 -o root -g root "${PAYLOAD_DIR}/bin/${tool}" "/usr/local/sbin/${tool}"
 done
 # /usr/local/sbin is on root's PATH but not on an unprivileged account's; these

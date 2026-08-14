@@ -1,0 +1,320 @@
+#!/bin/bash
+# Install, list and remove NetBox plugins on a deployed appliance.
+#
+# Doing this by hand is three steps with a trap in the middle: the pip name and
+# the Python module name routinely differ (netbox-bgp installs netbox_bgp), and
+# putting the wrong one in PLUGINS gives you a NetBox that refuses to start.
+# This resolves the module name from the installed distribution's own metadata
+# instead of guessing, and verifies the appliance still serves before it calls
+# the change done.
+#
+# Enabling a plugin applies its migrations, which are not reversible, so a
+# backup is taken first - the same rule netbox-upgrade follows.
+set -euo pipefail
+
+NETBOX_ROOT="$(readlink -f /opt/netbox)"
+CONFIG=/etc/netbox/appliance.json
+REQUIREMENTS="${NETBOX_ROOT}/local_requirements.txt"
+PIP="${NETBOX_ROOT}/venv/bin/pip"
+PY="${NETBOX_ROOT}/venv/bin/python"
+
+usage() {
+	cat <<'EOF'
+usage: netbox-plugin list
+       netbox-plugin install <pip-requirement> [--yes]
+       netbox-plugin remove  <module-name> [--yes]
+
+  list      what is enabled, what is installed, and whether they agree
+  install   add to local_requirements.txt, install, enable in PLUGINS,
+            migrate, restart and verify the appliance still serves
+  remove    disable in PLUGINS and drop the requirement; the plugin's
+            tables and data stay in the database
+
+Examples:
+  netbox-plugin install netbox-bgp
+  netbox-plugin install 'netbox-topology-views==3.8.1'
+  netbox-plugin remove netbox_bgp
+EOF
+}
+
+require_root() {
+	if [ "$(id -u)" -ne 0 ]; then
+		echo "netbox-plugin: run as root" >&2
+		exit 1
+	fi
+}
+
+confirm() {
+	[ "${1:-}" = '--yes' ] && return 0
+	read -r -p "Continue? [y/N] " answer
+	case "${answer}" in
+	y | Y | yes | YES) return 0 ;;
+	*)
+		echo "Aborted."
+		exit 1
+		;;
+	esac
+}
+
+# Enabled plugins live in appliance.json, which configuration.py reads. Editing
+# it through python keeps the file valid JSON and its ownership intact - it is
+# root:netbox 0640 because NetBox reads it and it holds SECRET_KEY.
+config_plugins() {
+	"${PY}" -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("plugins",[])))' "${CONFIG}"
+}
+
+set_plugins() { # set_plugins add|remove <module>
+	python3 - "${CONFIG}" "$1" "$2" <<'PY'
+import json
+import os
+import sys
+
+path, action, module = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as handle:
+    config = json.load(handle)
+plugins = config.get("plugins", [])
+if action == "add" and module not in plugins:
+    plugins.append(module)
+if action == "remove":
+    plugins = [p for p in plugins if p != module]
+    config.get("plugins_config", {}).pop(module, None)
+config["plugins"] = plugins
+
+stat = os.stat(path)
+tmp = path + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump(config, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.chown(tmp, stat.st_uid, stat.st_gid)
+os.chmod(tmp, stat.st_mode & 0o7777)
+os.replace(tmp, path)
+PY
+}
+
+# The distribution's own metadata knows which module it provides; guessing by
+# replacing dashes with underscores is right often enough to be dangerous.
+module_for() { # module_for <distribution-name>
+	"${PY}" - "$1" <<'PY'
+import sys
+
+try:
+    import importlib.metadata as md
+except ImportError:                                          # noqa: BLE001
+    raise SystemExit(1)
+
+name = sys.argv[1]
+try:
+    dist = md.distribution(name)
+except Exception:                                            # noqa: BLE001
+    raise SystemExit(1)
+
+top = dist.read_text("top_level.txt")
+if top:
+    for line in top.split():
+        if line and not line.startswith("_"):
+            print(line)
+            raise SystemExit(0)
+
+# No top_level.txt (most modern wheels): take the shallowest package that
+# ships an __init__.py.
+best = None
+for f in dist.files or []:
+    parts = str(f).split("/")
+    if parts[-1] == "__init__.py" and len(parts) >= 2:
+        if best is None or len(parts) < len(best):
+            best = parts
+if best:
+    print(best[0])
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+serving() {
+	local code
+	code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ 2>/dev/null || true)"
+	[ "${code}" = '200' ]
+}
+
+cmd_list() {
+	echo "Enabled in PLUGINS (${CONFIG}):"
+	local any=0
+	while read -r module; do
+		[ -z "${module}" ] && continue
+		any=1
+		if "${PY}" -c "import ${module}" >/dev/null 2>&1; then
+			version="$("${PY}" -c "import ${module} as m; print(getattr(m,'__version__','?'))" 2>/dev/null || echo '?')"
+			printf '  %-34s importable (%s)\n' "${module}" "${version}"
+		else
+			printf '  %-34s NOT IMPORTABLE - NetBox will not start\n' "${module}"
+		fi
+	done < <(config_plugins)
+	[ "${any}" -eq 0 ] && echo "  (none)"
+
+	echo
+	echo "Requirements (${REQUIREMENTS}):"
+	if [ -s "${REQUIREMENTS}" ]; then
+		grep -vE '^\s*(#|$)' "${REQUIREMENTS}" | sed 's/^/  /' || echo "  (none)"
+	else
+		echo "  (none)"
+	fi
+	echo
+	echo "A requirement that is installed but not enabled does nothing;"
+	echo "an enabled plugin that is not importable stops NetBox from starting."
+}
+
+cmd_install() {
+	local requirement="$1"
+	local yes="${2:-}"
+	local dist="${requirement%%[<>=!~;[ ]*}"
+
+	echo "netbox-plugin: installing ${requirement}"
+	echo "  a backup is taken first: enabling a plugin applies migrations,"
+	echo "  and NetBox migrations cannot be rolled back."
+	confirm "${yes}"
+
+	netbox-backup
+
+	cp -a "${CONFIG}" "${CONFIG}.pre-plugin"
+	[ -f "${REQUIREMENTS}" ] && cp -a "${REQUIREMENTS}" "${REQUIREMENTS}.pre-plugin"
+
+	restore_and_fail() {
+		echo "netbox-plugin: reverting configuration ..." >&2
+		mv -f "${CONFIG}.pre-plugin" "${CONFIG}"
+		[ -f "${REQUIREMENTS}.pre-plugin" ] && mv -f "${REQUIREMENTS}.pre-plugin" "${REQUIREMENTS}"
+		systemctl restart netbox.service netbox-rq.service || true
+		exit 1
+	}
+
+	if ! grep -qxF -- "${requirement}" "${REQUIREMENTS}" 2>/dev/null; then
+		printf '%s\n' "${requirement}" >>"${REQUIREMENTS}"
+	fi
+
+	echo "netbox-plugin: installing the package ..."
+	if ! "${PIP}" install --quiet -r "${REQUIREMENTS}"; then
+		echo "netbox-plugin: pip could not install it." >&2
+		echo "  If this appliance has no route to PyPI, 'netbox-status' will say so." >&2
+		echo "  An air-gapped site needs the plugin baked into the image instead." >&2
+		restore_and_fail
+	fi
+
+	local module
+	if ! module="$(module_for "${dist}")"; then
+		echo "netbox-plugin: installed ${dist}, but could not determine its module name." >&2
+		echo "  Add it to 'plugins' in ${CONFIG} by hand and restart netbox." >&2
+		restore_and_fail
+	fi
+	echo "netbox-plugin: ${dist} provides the module '${module}'"
+
+	if ! "${PY}" -c "import ${module}" >/dev/null 2>&1; then
+		echo "netbox-plugin: '${module}' does not import after installation." >&2
+		restore_and_fail
+	fi
+
+	set_plugins add "${module}"
+
+	echo "netbox-plugin: applying migrations ..."
+	if ! netbox-manage migrate --no-input; then
+		echo "netbox-plugin: migrations failed." >&2
+		restore_and_fail
+	fi
+
+	echo "netbox-plugin: restarting ..."
+	systemctl restart netbox.service netbox-rq.service
+	systemctl reload nginx.service
+
+	for _ in $(seq 1 30); do
+		serving && break
+		sleep 5
+	done
+	if ! serving; then
+		echo "netbox-plugin: the appliance stopped serving after enabling ${module}." >&2
+		echo "  The plugin is probably incompatible with NetBox $(git -C "${NETBOX_ROOT}" describe --tags --always)." >&2
+		echo "  Reverting the configuration; the migrations it applied remain." >&2
+		echo "  Restore the backup taken above if the database needs rolling back." >&2
+		restore_and_fail
+	fi
+
+	rm -f "${CONFIG}.pre-plugin" "${REQUIREMENTS}.pre-plugin"
+	echo "netbox-plugin: ${module} enabled and the appliance is serving."
+	echo "  Configure it under 'plugins_config' in ${CONFIG} if it needs settings."
+}
+
+cmd_remove() {
+	local module="$1"
+	local yes="${2:-}"
+
+	if ! config_plugins | grep -qxF -- "${module}"; then
+		echo "netbox-plugin: '${module}' is not enabled. 'netbox-plugin list' shows what is." >&2
+		exit 1
+	fi
+
+	echo "netbox-plugin: disabling ${module}"
+	echo "  Its tables and data stay in the database - NetBox has no plugin"
+	echo "  uninstall that removes them, and dropping them by hand is how you"
+	echo "  lose data you meant to keep. Re-enabling later picks them back up."
+	confirm "${yes}"
+
+	netbox-backup
+	set_plugins remove "${module}"
+
+	# Drop the requirement too, so a later --reinstall or a restore into a new
+	# appliance does not quietly bring it back.
+	if [ -f "${REQUIREMENTS}" ]; then
+		"${PY}" - "${REQUIREMENTS}" "${module}" <<'PY'
+import re
+import sys
+
+path, module = sys.argv[1], sys.argv[2]
+keep = []
+for line in open(path).read().splitlines():
+    name = re.split(r"[<>=!~;\[ ]", line.strip(), 1)[0]
+    if name and name.replace("-", "_").lower() == module.replace("-", "_").lower():
+        continue
+    keep.append(line)
+open(path, "w").write("\n".join(keep) + ("\n" if keep else ""))
+PY
+	fi
+
+	systemctl restart netbox.service netbox-rq.service
+	for _ in $(seq 1 30); do
+		serving && break
+		sleep 5
+	done
+	serving || {
+		echo "netbox-plugin: the appliance is not serving after removing ${module}." >&2
+		echo "  journalctl -u netbox -b" >&2
+		exit 1
+	}
+	echo "netbox-plugin: ${module} disabled and the appliance is serving."
+}
+
+case "${1:-}" in
+list)
+	require_root
+	cmd_list
+	;;
+install)
+	require_root
+	[ -n "${2:-}" ] || {
+		usage >&2
+		exit 2
+	}
+	cmd_install "$2" "${3:-}"
+	;;
+remove)
+	require_root
+	[ -n "${2:-}" ] || {
+		usage >&2
+		exit 2
+	}
+	cmd_remove "$2" "${3:-}"
+	;;
+-h | --help)
+	usage
+	;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac
