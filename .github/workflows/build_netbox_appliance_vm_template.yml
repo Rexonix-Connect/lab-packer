@@ -162,7 +162,23 @@ jobs:
 
           os.environ['VAPP_EXTRA_DESCRIPTORS'] = 'shared/vapp-descriptors/netbox.json'
           ids = load()
-          assert len([i for i in ids if i.startswith('netbox.')]) == 14, ids
+          # The expectation comes from netbox.json itself, not a hardcoded
+          # count: a count is one more copy of the same fact, and the copy is
+          # what rots - adding the proxy fields broke the previous `== 14`
+          # while every real invariant still held. What this must catch is a
+          # JSON entry that never reaches DESCRIPTORS, a reordering, or a
+          # foreign id - all of which the comparison below still does.
+          import json
+          with open('shared/vapp-descriptors/netbox.json') as handle:
+              expected = [d['id'] for d in json.load(handle)['descriptors']]
+          extras = [i for i in ids if i not in BASE]
+          # On failure, print the two lists actually being compared: whether
+          # this is a missing id, a foreign one or ordering drift should be
+          # readable from the message, not re-derived from the composed form.
+          assert extras == expected, (
+              'extras do not match netbox.json\n'
+              '  composed: %s\n  expected: %s\n  full form: %s'
+              % (extras, expected, ids))
           assert ids[-1] == 'user-data', ids
           assert [i for i in ids if i in BASE] == BASE, ids
           print('deploy form: %d properties for the appliance, %d for the OS'

@@ -140,7 +140,7 @@ These run before the template-specific checks so a guest that never finished boo
 
 **A failed test keeps its VM, and the login for it.** Successful and cancelled runs delete both; a failure leaves the VM running and keeps the `diag` key on the runner, printing the `ssh` line to reach it and the `govc vm.destroy` line to clean up. The seeded account has a locked password and the templates ship with their provisioning account removed or disabled, so discarding that key would leave the evidence intact and unreachable. Set `destroy_on_failure` to delete regardless. Test VM names carry the run *attempt* as well as the run id, so re-running a failed job does not collide with the VM it kept.
 
-The NetBox appliance gets three extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: its fourteen `netbox.*` deploy-form properties must be present, both disks must have survived the export and deploy, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
+The NetBox appliance gets three extra checks, because "the VM booted" is a much weaker claim for an appliance than for an OS template: every `netbox.*` deploy-form property must be present, both disks must have survived the export and deploy, and — deployed with a completely empty form — it must serve its login page over HTTPS (200), redirect plain HTTP (301), reject an unauthenticated API call (403) and deny `/metrics` (403, since no allowlist was deployed). The certificate it generated for itself is printed. Turn the HTTP half off with `netbox_http_check` if the runner cannot reach the VM network.
 
 #### Workflow inputs
 
@@ -336,7 +336,7 @@ Every template's content library OVF item carries user-configurable OVF properti
 | `network.domain` | DNS search domain(s) |
 | `user-data` | Advanced usage: **base64-encoded** cloud-config (Linux) / Cloudbase-Init userdata (Windows) for anything beyond the fields above |
 
-The NetBox appliance carries fourteen more, in the categories **NetBox Application**, **NetBox TLS**, **NetBox Database** and **NetBox Cache**, placed before **Advanced**. Every one of them is optional: an entirely empty form produces a working, self-contained NetBox.
+The NetBox appliance carries the `netbox.*` properties on top, in the categories **NetBox Application**, **NetBox Network**, **NetBox TLS**, **NetBox Database** and **NetBox Cache**, placed before **Advanced**. Every one of them is optional: an entirely empty form produces a working, self-contained NetBox.
 
 | Property | Meaning |
 | --- | --- |
