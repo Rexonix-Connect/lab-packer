@@ -404,6 +404,136 @@ def write_file(path, content, mode, owner=None):
 
 
 #
+# outbound proxy
+#
+
+# Deliberately strict. The value lands in an apt configuration string, a
+# systemd Environment= line and /etc/environment, none of which are quoted the
+# same way, so anything that could terminate a string or start a new directive
+# is refused rather than escaped three different ways.
+PROXY_RE = re.compile(
+    r'^https?://'                          # scheme, so apt and pip agree
+    r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'      # optional user:password
+    r'[A-Za-z0-9._-]+'                     # host
+    r'(?::\d{1,5})?/?$')                   # optional port
+NO_PROXY_RE = re.compile(r'^[A-Za-z0-9.*_-]+(?:/\d{1,3})?$')
+
+ENVIRONMENT = '/etc/environment'
+APT_PROXY = '/etc/apt/apt.conf.d/95netbox-proxy'
+# NetBox itself reaches out - webhooks, plugin scripts, custom reports - and a
+# service does not inherit /etc/environment, so those two get a drop-in. apt is
+# configured through apt.conf rather than the environment, which is what
+# unattended-upgrades honours.
+PROXY_DROPINS = ('/etc/systemd/system/netbox.service.d/30-proxy.conf',
+                 '/etc/systemd/system/netbox-rq.service.d/30-proxy.conf')
+MARK_BEGIN = '# --- netbox-firstboot proxy (managed) ---'
+MARK_END = '# --- end netbox-firstboot proxy ---'
+
+
+def scrub_proxy(url):
+    """The URL may carry user:password@; that never goes into a log line.
+
+    The journal is exactly what netbox-support-bundle ships off the machine,
+    and the bundle promises to contain no secrets.
+    """
+    return re.sub(r'//[^/@]+@', '//<redacted>@', url)
+
+
+def parse_no_proxy(value):
+    """Split the bypass list, dropping anything that is not a plain host."""
+    entries = []
+    for raw in re.split(r'[,\s]+', value or ''):
+        entry = raw.strip()
+        if not entry:
+            continue
+        if NO_PROXY_RE.match(entry):
+            if entry not in entries:
+                entries.append(entry)
+        else:
+            log('ignoring proxy bypass entry %r: not a host, domain or CIDR'
+                % entry)
+    return entries
+
+
+def environment_without_block(text):
+    """The file with any previously managed block removed."""
+    out, skipping = [], False
+    for line in text.splitlines():
+        if line.strip() == MARK_BEGIN:
+            skipping = True
+            continue
+        if line.strip() == MARK_END:
+            skipping = False
+            continue
+        if not skipping:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return '\n'.join(out)
+
+
+def write_proxy(props):
+    """Point the appliance's own outbound traffic at a proxy, or clear it.
+
+    Applied on every run, so clearing the field on a redeploy clears the proxy
+    rather than leaving a stale one that silently breaks patching.
+    """
+    proxy = prop(props, 'netbox.proxy').strip()
+    if proxy and not PROXY_RE.match(proxy):
+        log('ignoring netbox.proxy %r: expected http://host:port' % proxy)
+        proxy = ''
+
+    # Never send loopback or the appliance's own traffic through a proxy.
+    bypass = ['localhost', '127.0.0.1', '::1'] + parse_no_proxy(
+        prop(props, 'netbox.no-proxy'))
+    no_proxy = ','.join(bypass)
+
+    existing = ''
+    if os.path.exists(ENVIRONMENT):
+        with open(ENVIRONMENT) as handle:
+            existing = handle.read()
+    body = environment_without_block(existing)
+
+    if not proxy:
+        write_file(ENVIRONMENT, body + '\n' if body else '', 0o644)
+        for path in (APT_PROXY,) + PROXY_DROPINS:
+            if os.path.exists(path):
+                os.remove(path)
+        run(['systemctl', 'daemon-reload'], check=False)
+        log('no proxy configured; outbound traffic goes direct')
+        return
+
+    lines = [body] if body else []
+    lines.append(MARK_BEGIN)
+    for name in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+        lines.append('%s=%s' % (name, proxy))
+    for name in ('no_proxy', 'NO_PROXY'):
+        lines.append('%s=%s' % (name, no_proxy))
+    lines.append(MARK_END)
+    write_file(ENVIRONMENT, '\n'.join(lines) + '\n', 0o644)
+
+    # 0600, not 0644: apt reads this as root, and the URL may carry
+    # credentials. /etc/environment stays world-readable by necessity, which
+    # the README notes - prefer an unauthenticated proxy where possible.
+    write_file(APT_PROXY,
+               '// Written by netbox-firstboot.py from the deploy form.\n'
+               'Acquire::http::Proxy "%s";\n'
+               'Acquire::https::Proxy "%s";\n' % (proxy, proxy), 0o600)
+
+    for path in PROXY_DROPINS:
+        write_file(path,
+                   '# Written by netbox-firstboot.py from the deploy form.\n'
+                   '[Service]\n'
+                   'Environment=http_proxy=%s\n'
+                   'Environment=https_proxy=%s\n'
+                   'Environment=no_proxy=%s\n' % (proxy, proxy, no_proxy),
+                   0o600)
+    run(['systemctl', 'daemon-reload'], check=False)
+    log('outbound proxy set to %s (bypass: %s)'
+        % (scrub_proxy(proxy), no_proxy))
+
+
+#
 # nginx
 #
 
@@ -604,6 +734,7 @@ def bootstrap(props):
         'plugins_config': {},
     }
     write_config(config)
+    write_proxy(props)
     log('wrote %s (%s database, metrics %s)'
         % (CONFIG, 'local' if local_database else 'external',
            'on' if metrics_allow else 'off'))
@@ -703,6 +834,7 @@ def reconcile(props):
 
     metrics_allow = parse_allowlist(prop(props, 'netbox.metrics-allow'))
     write_nginx_snippets(fqdn, metrics_allow, not os.path.exists(SELF_SIGNED))
+    write_proxy(props)
 
     if state.get('fqdn') != fqdn:
         state['fqdn'] = fqdn
