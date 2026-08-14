@@ -430,6 +430,15 @@ MARK_BEGIN = '# --- netbox-firstboot proxy (managed) ---'
 MARK_END = '# --- end netbox-firstboot proxy ---'
 
 
+def scrub_proxy(url):
+    """The URL may carry user:password@; that never goes into a log line.
+
+    The journal is exactly what netbox-support-bundle ships off the machine,
+    and the bundle promises to contain no secrets.
+    """
+    return re.sub(r'//[^/@]+@', '//<redacted>@', url)
+
+
 def parse_no_proxy(value):
     """Split the bypass list, dropping anything that is not a plain host."""
     entries = []
@@ -503,10 +512,13 @@ def write_proxy(props):
     lines.append(MARK_END)
     write_file(ENVIRONMENT, '\n'.join(lines) + '\n', 0o644)
 
+    # 0600, not 0644: apt reads this as root, and the URL may carry
+    # credentials. /etc/environment stays world-readable by necessity, which
+    # the README notes - prefer an unauthenticated proxy where possible.
     write_file(APT_PROXY,
                '// Written by netbox-firstboot.py from the deploy form.\n'
                'Acquire::http::Proxy "%s";\n'
-               'Acquire::https::Proxy "%s";\n' % (proxy, proxy), 0o644)
+               'Acquire::https::Proxy "%s";\n' % (proxy, proxy), 0o600)
 
     for path in PROXY_DROPINS:
         write_file(path,
@@ -515,9 +527,10 @@ def write_proxy(props):
                    'Environment=http_proxy=%s\n'
                    'Environment=https_proxy=%s\n'
                    'Environment=no_proxy=%s\n' % (proxy, proxy, no_proxy),
-                   0o644)
+                   0o600)
     run(['systemctl', 'daemon-reload'], check=False)
-    log('outbound proxy set to %s (bypass: %s)' % (proxy, no_proxy))
+    log('outbound proxy set to %s (bypass: %s)'
+        % (scrub_proxy(proxy), no_proxy))
 
 
 #

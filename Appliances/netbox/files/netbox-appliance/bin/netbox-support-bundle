@@ -63,8 +63,12 @@ say 'patch state'
 	systemctl status apt-daily-upgrade.timer --no-pager 2>&1 | head -n 15
 	printf '\n--- proxy configuration seen by apt ---\n'
 	grep -rils proxy /etc/apt/apt.conf.d/ 2>/dev/null || echo 'none'
-	printf '\n--- proxy environment ---\n'
-	grep -is proxy /etc/environment 2>/dev/null || echo 'none'
+	printf '\n--- proxy environment (credentials redacted) ---\n'
+	# The deploy form accepts http://user:password@host, so the raw lines
+	# from /etc/environment are the one place this bundle would otherwise
+	# carry a secret.
+	grep -is proxy /etc/environment 2>/dev/null |
+		sed -E 's#://[^@/[:space:]]+@#://<redacted>@#g' || echo 'none'
 } 2>&1 | cap patching.txt 'patch state'
 
 say 'services and boot'

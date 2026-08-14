@@ -72,18 +72,30 @@ fi
 # completely silent: the timer runs, finds nothing, and the appliance looks
 # healthy while patching nothing for months. All three checks read local state
 # only, because this drives the MOTD and must not block on the network.
+#
+# Loud text, but never the exit code: netbox-upgrade and netbox-restore end by
+# running this script under set -e, and a pending reboot or a not-yet-refreshed
+# archive stamp is normal life, not a broken appliance. The exit code stays
+# reserved for "is it serving".
+now=$(date +%s)
+up=$(cut -d. -f1 /proc/uptime)
 stamp=/var/lib/apt/periodic/update-success-stamp
-if [ -f "${stamp}" ]; then
-	age_days=$(( ( $(date +%s) - $(date -r "${stamp}" +%s) ) / 86400 ))
-	if [ "${age_days}" -le 2 ]; then
-		reach="archive reachable"
-	else
-		reach="LAST REACHED THE ARCHIVE ${age_days} DAYS AGO - check egress/proxy"
-		unhealthy=1
-	fi
+if [ -f "${stamp}" ] && [ $(( now - $(date -r "${stamp}" +%s) )) -le $(( 2 * 86400 )) ]; then
+	reach="archive reachable"
+elif [ ! -x /usr/lib/update-notifier/apt-check ] && [ ! -f "${stamp}" ]; then
+	# Both artifacts come from update-notifier-common; without it there is
+	# nothing to measure, which is different from measuring a failure.
+	reach="patch state unavailable (update-notifier-common is not installed)"
+elif [ "${up}" -lt 86400 ]; then
+	# The stamp still reflects the template build (or is absent): a freshly
+	# deployed appliance simply has not had its first randomized apt-daily
+	# run yet. Crying wolf on day one would teach people to ignore the line.
+	reach="first check since deploy still pending"
+elif [ -f "${stamp}" ]; then
+	age_days=$(( ( now - $(date -r "${stamp}" +%s) ) / 86400 ))
+	reach="LAST REACHED THE ARCHIVE ${age_days} DAYS AGO - check egress/proxy"
 else
 	reach="NEVER REACHED THE ARCHIVE - check egress/proxy"
-	unhealthy=1
 fi
 
 # apt-check reads the local apt cache and prints "updates;security".
@@ -102,7 +114,6 @@ fi
 
 if [ -f /var/run/reboot-required ]; then
 	echo "  Reboot    REQUIRED to finish applying updates (kernel or libraries)"
-	unhealthy=1
 fi
 
 latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"

@@ -411,7 +411,7 @@ The value is applied to the three places that actually need it, because none of 
 
 It is re-applied on **every** boot, like the network settings: a customer's proxy can be introduced or changed after deployment, and clearing the field clears the proxy everywhere rather than leaving a stale one that quietly breaks patching. `localhost`, `127.0.0.1` and `::1` are always bypassed, plus whatever `netbox.no-proxy` lists.
 
-The proxy URL must be `http://host[:port]` or `https://...`, optionally with `user:password@`. Anything else is refused and logged rather than escaped — the value lands in an apt configuration string, a systemd `Environment=` line and `/etc/environment`, which quote differently, and a value that could terminate one of those strings is not worth escaping three ways. Bypass entries are filtered to plain hosts, domains and CIDRs on the same reasoning.
+The proxy URL must be `http://host[:port]` or `https://...`, optionally with `user:password@` — though prefer an unauthenticated proxy where possible: the apt configuration and the systemd drop-ins are written `0600`, and the journal only ever sees the URL with credentials redacted, but `/etc/environment` is world-readable by convention and necessity, so a credentialed URL there is visible to local accounts. Anything else is refused and logged rather than escaped — the value lands in an apt configuration string, a systemd `Environment=` line and `/etc/environment`, which quote differently, and a value that could terminate one of those strings is not worth escaping three ways. Bypass entries are filtered to plain hosts, domains and CIDRs on the same reasoning.
 
 #### Plugins
 

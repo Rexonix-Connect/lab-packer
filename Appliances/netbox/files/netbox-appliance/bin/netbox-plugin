@@ -219,6 +219,16 @@ cmd_install() {
 		restore_and_fail
 	fi
 
+	# Most UI plugins ship static assets; without this they "install fine" and
+	# then render without their CSS and JavaScript. Run as root with the venv
+	# python, exactly as upgrade.sh does - the static tree is not writable by
+	# the netbox account that netbox-manage switches to.
+	echo "netbox-plugin: collecting static files ..."
+	if ! "${PY}" "${NETBOX_ROOT}/netbox/manage.py" collectstatic --no-input >/dev/null; then
+		echo "netbox-plugin: collectstatic failed." >&2
+		restore_and_fail
+	fi
+
 	echo "netbox-plugin: restarting ..."
 	systemctl restart netbox.service netbox-rq.service
 	systemctl reload nginx.service
