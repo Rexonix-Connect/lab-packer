@@ -44,6 +44,20 @@
       "type": "string"
     },
     {
+      "id": "netbox.proxy",
+      "category": "NetBox Network",
+      "label": "HTTP(S) Proxy",
+      "description": "Proxy for the appliance's own outbound traffic, for example http://proxy.example.com:3128. Needed for Ubuntu security updates, NetBox upgrades and plugin installation on a network without direct internet access. Empty means connect directly",
+      "type": "string"
+    },
+    {
+      "id": "netbox.no-proxy",
+      "category": "NetBox Network",
+      "label": "Proxy Bypass List",
+      "description": "Comma-separated hosts, domains and CIDRs reached without the proxy, for example .internal.example.com,10.0.0.0/8. localhost and the appliance's own addresses are always bypassed",
+      "type": "string"
+    },
+    {
       "id": "netbox.tls-cert",
       "category": "NetBox TLS",
       "label": "TLS Certificate Chain (base64 PEM)",

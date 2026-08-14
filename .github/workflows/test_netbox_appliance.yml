@@ -159,7 +159,8 @@ jobs:
           val = data[0].get("val") if data else None
           print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
           for key in netbox.fqdn netbox.time-zone netbox.admin-username netbox.admin-email \
-                     netbox.admin-password netbox.metrics-allow netbox.tls-cert netbox.tls-key \
+                     netbox.admin-password netbox.metrics-allow netbox.proxy netbox.no-proxy \
+                     netbox.tls-cert netbox.tls-key \
                      netbox.db-host netbox.db-name netbox.db-user netbox.db-password \
                      netbox.redis-host netbox.redis-password; do
             if ! echo "${props}" | grep -qx "${key}"; then

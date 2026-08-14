@@ -403,6 +403,16 @@ It also reports **how long since the archive was last reached**. This matters mo
 
 **Everything else — a NetBox major version, an Ubuntu release upgrade, a new appliance image — is a redeploy, not an upgrade.** Deploy the new template alongside, `netbox-restore` the most recent backup into it, verify, cut over, keep the old VM until you are sure. The appliance is built for this: the template carries no identity, the deploy form reconfigures everything at first boot, and `netbox-reconcile` re-derives host names and certificates when the address changes. In an air-gapped network this is the *only* upgrade path, since neither the archive nor PyPI is reachable.
 
+#### Outbound proxy
+
+Two deploy-form fields, `netbox.proxy` and `netbox.no-proxy`, point the appliance's own outbound traffic at a customer proxy. Without them a proxied site can never fetch Ubuntu security updates, a NetBox release or a plugin — and would do so silently, which is the failure `netbox-status` now surfaces.
+
+The value is applied to the three places that actually need it, because none of them read the others: `/etc/environment` for login sessions (so `netbox-upgrade` and `netbox-plugin` inherit it), `/etc/apt/apt.conf.d/95netbox-proxy` for apt and `unattended-upgrades`, which are configured through `apt.conf` rather than the environment, and a systemd drop-in on `netbox.service` and `netbox-rq.service`, since a unit does not inherit `/etc/environment` and NetBox itself reaches out for webhooks, plugin scripts and custom reports.
+
+It is re-applied on **every** boot, like the network settings: a customer's proxy can be introduced or changed after deployment, and clearing the field clears the proxy everywhere rather than leaving a stale one that quietly breaks patching. `localhost`, `127.0.0.1` and `::1` are always bypassed, plus whatever `netbox.no-proxy` lists.
+
+The proxy URL must be `http://host[:port]` or `https://...`, optionally with `user:password@`. Anything else is refused and logged rather than escaped — the value lands in an apt configuration string, a systemd `Environment=` line and `/etc/environment`, which quote differently, and a value that could terminate one of those strings is not worth escaping three ways. Bypass entries are filtered to plain hosts, domains and CIDRs on the same reasoning.
+
 #### Plugins
 
 Plugins are configuration, not file edits: `configuration.py` reads `PLUGINS` and `PLUGINS_CONFIG` out of `/etc/netbox/appliance.json`, and `netbox-reconcile` only ever rewrites `allowed_hosts`, so an operator's plugin set survives reboots and address changes untouched.
