@@ -116,15 +116,28 @@ if [ -f /var/run/reboot-required ]; then
 	echo "  Reboot    REQUIRED to finish applying updates (kernel or libraries)"
 fi
 
-latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
-if [ -n "${latest}" ]; then
-	echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"
+# The backup directory is 0700 and the credentials file 0600, so an account
+# that is not root cannot tell "there is nothing" from "cannot look" - and
+# this script is meant to be safe to run as anyone. Report which one it is.
+# "Backup none yet" on an appliance that has backed up nightly for a month is
+# a worse answer than one that admits the account cannot see.
+if [ -r /srv/netbox/backups ] || [ "$(id -u)" -eq 0 ]; then
+	latest="$(ls -1t /srv/netbox/backups/*.dump 2>/dev/null | head -n 1 || true)"
+	if [ -n "${latest}" ]; then
+		echo "  Backup    $(basename "${latest}") ($(date -r "${latest}" '+%Y-%m-%d %H:%M'))"
+	else
+		echo "  Backup    none yet (nightly timer: $(systemctl is-active netbox-backup.timer 2>/dev/null || echo unknown))"
+	fi
 else
-	echo "  Backup    none yet (nightly timer: $(systemctl is-active netbox-backup.timer 2>/dev/null || echo unknown))"
+	echo "  Backup    not visible to this account - sudo netbox-status"
 fi
 
-if [ -f /root/netbox-credentials.txt ]; then
-	echo "  Login     generated credentials in /root/netbox-credentials.txt (netbox-credentials)"
+if [ -r /root ] || [ "$(id -u)" -eq 0 ]; then
+	if [ -f /root/netbox-credentials.txt ]; then
+		echo "  Login     generated credentials in /root/netbox-credentials.txt (netbox-credentials)"
+	fi
+else
+	echo "  Login     not visible to this account - sudo netbox-status"
 fi
 
 exit "${unhealthy}"

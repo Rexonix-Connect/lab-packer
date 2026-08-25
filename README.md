@@ -490,7 +490,9 @@ netbox-credentials --clear
 
 ### Day-two commands
 
-All of them need root and live in `/usr/local/sbin`:
+All of them live in `/usr/local/sbin`. `netbox-status` is safe to run as any account — it drives the MOTD — and every other one requires root and says so up front rather than half-working.
+
+> **Why they refuse instead of trying.** The state these commands check sits behind the same permissions as the work they do: `/etc/netbox` is `0750 root:netbox`, `/srv/netbox/backups` is `0700 root`, `/root/netbox-credentials.txt` is `0600`. To an account outside those, `test -f` cannot tell *not there* from *cannot look* — so a non-root run produced confident nonsense: `netbox-manage` told an operator a perfectly healthy, serving appliance had never been bootstrapped, and `netbox-credentials` would have claimed none were generated. They now check for root first and print the `sudo` line to use. `netbox-status` keeps working as anyone, and reports the two things it cannot see as *not visible to this account* rather than as absent.
 
 | Command | Purpose |
 | --- | --- |

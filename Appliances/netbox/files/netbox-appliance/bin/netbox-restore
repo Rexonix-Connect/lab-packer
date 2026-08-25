@@ -16,6 +16,12 @@ CONFIG=/etc/netbox/appliance.json
 # symlink when it records the virtual environment location.
 NETBOX_ROOT="$(readlink -f /opt/netbox)"
 
+if [ "$(id -u)" -ne 0 ]; then
+	echo "netbox-restore: run as root (stops services and replaces the database)" >&2
+	echo "  try: sudo netbox-restore $*" >&2
+	exit 1
+fi
+
 usage() {
 	echo "usage: netbox-restore <timestamp|dump-file> [--yes]"
 	echo

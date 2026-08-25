@@ -18,6 +18,12 @@ CONFIG=/etc/netbox/appliance.json
 NETBOX_ROOT="$(readlink -f /opt/netbox)"
 RETENTION_DAYS=14
 
+if [ "$(id -u)" -ne 0 ]; then
+	echo "netbox-backup: run as root (reads the database and writes under /srv/netbox)" >&2
+	echo "  try: sudo netbox-backup $*" >&2
+	exit 1
+fi
+
 # shellcheck disable=SC1091
 [ -f /etc/default/netbox-backup ] && . /etc/default/netbox-backup
 

@@ -9,6 +9,12 @@ set -euo pipefail
 
 NETBOX_ROOT=/opt/netbox
 
+if [ "$(id -u)" -ne 0 ]; then
+	echo "netbox-upgrade: run as root (installs into the virtual environment and restarts services)" >&2
+	echo "  try: sudo netbox-upgrade $*" >&2
+	exit 1
+fi
+
 usage() {
 	echo "usage: netbox-upgrade <vX.Y.Z> | --reinstall [--yes]"
 	echo

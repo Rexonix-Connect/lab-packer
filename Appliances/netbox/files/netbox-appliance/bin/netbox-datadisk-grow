@@ -10,6 +10,12 @@ set -euo pipefail
 
 MOUNTPOINT=/srv/netbox
 
+if [ "$(id -u)" -ne 0 ]; then
+	echo "netbox-datadisk-grow: run as root (grows a filesystem)" >&2
+	echo "  try: sudo netbox-datadisk-grow $*" >&2
+	exit 1
+fi
+
 if ! findmnt --noheadings --mountpoint "${MOUNTPOINT}" >/dev/null 2>&1; then
 	echo "netbox-datadisk-grow: ${MOUNTPOINT} is not mounted; nothing to grow" >&2
 	exit 0
