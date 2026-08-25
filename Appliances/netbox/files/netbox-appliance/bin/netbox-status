@@ -43,7 +43,7 @@ echo "NetBox appliance $(field netbox_version)"
 echo "  URL       $(field url)"
 echo "  Database  $(field database)"
 echo "  Metrics   $(if [ "$(field metrics_enabled)" = 'True' ]; then echo enabled; else echo off; fi)"
-echo "  TLS       $(if [ "$(field self_signed_certificate)" = 'True' ]; then echo 'self-signed (replace via the deploy form)'; else echo 'operator-supplied'; fi)"
+echo "  TLS       $(if [ "$(field self_signed_certificate)" = 'True' ]; then echo 'self-signed (replace with: netbox-tls install <cert> <key>)'; else echo 'operator-supplied'; fi)"
 
 printf '  Services '
 unhealthy=0
