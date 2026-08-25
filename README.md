@@ -360,6 +360,46 @@ Consumption paths: on Linux the native fields are read by cloud-init's OVF datas
 
 Precedence: explicitly injected `guestinfo.metadata`/`guestinfo.userdata` (e.g. from Terraform) outranks the form on Linux; vCenter guest customization specs continue to work unchanged on both OS families and are the right tool for bulk cloning.
 
+### Virtual hardware version
+
+Templates are built at **hardware version 19** — ESXi 7.0 U2 and later — pinned by `vmHardwareVersion` in each template's `variables-definitions.pkr.hcl`. Left unpinned, the builder takes whatever the *build* cluster offers (vmx-21 on ESXi 8.0 U2), and a vCenter that does not know that version refuses to deploy from the item at all:
+
+```
+Issues detected with selected template. Details:
+ - -1:-1:VALUE_ILLEGAL: No supported hardware versions among [vmx-21];
+   supported: [vmx-04, ..., vmx-19].
+```
+
+A template is only as portable as the oldest vCenter it has to reach, and the version can be raised on an existing VM but never lowered — too new means rebuilt. So the post-build normalize step prints the exported version on every build and fails the build when it is above the ceiling in `shared/scripts/normalize-library-ovf.py`, which also refuses to let a template pin a version higher than that ceiling. Nothing in these images needs newer virtual hardware: UEFI Secure Boot arrived at vmx-13, pvscsi and vmxnet3 long before it. Raise the pin only for a feature that requires it, and only once every vCenter these templates are deployed into — customers' included — supports it.
+
+> **The NetBox appliance cannot pin its own.** It is built by `vsphere-clone`, which has no `vm_version` and inherits the source library item's version. After changing the pin, rebuild in order: the hardened base first, then the appliance. The exported-version check is what catches an appliance rebuilt against a stale base.
+
+An **already exported** template can be downgraded on disk instead of rebuilt, which is worth it for a 3.5 GB item and a one-off migration. VMware's OVF Tool does it properly, disks and all: `ovftool --lax --maxVirtualHardwareVersion=19 NAME.ovf out\` (the flag only ever lowers — it will not upgrade a VM to a version it was not built at). Failing that, the version lives in exactly one place in the descriptor, `<vssd:VirtualSystemType>`, and editing `vmx-21` to `vmx-19` there is a same-length, in-place change; there is nothing else to fix unless the export carries a `.mf`, whose SHA of the descriptor would then need recomputing. Either way this is a downgrade in the label only — verify the result boots and serves before trusting it, and treat the rebuild as the real fix.
+
+### Moving a template to another vCenter
+
+The vCenter that builds a template and the vCenter it is deployed in are not always the same one, and are not always connected. The item travels as files: export it from the source library, carry the directory across, import it into a library on the far side. With PowerCLI on a workstation that can reach both (one connection at a time is fine):
+
+```powershell
+# Export - writes a directory named after the item
+Connect-VIServer -Server vcenter-a.example.com
+$item = Get-ContentLibraryItem -Name NETBOX_APPLIANCE_x64_VM
+Export-ContentLibraryItem -ContentLibraryItem $item -Destination C:\temp\netbox
+
+# Import - every file the export produced, the .nvram included
+Connect-VIServer -Server vcenter-b.example.com
+$files = (Get-ChildItem C:\temp\netbox\NETBOX_APPLIANCE_x64_VM).FullName
+New-ContentLibraryItem -ContentLibrary (Get-ContentLibrary -Name Templates) `
+  -Name NETBOX_APPLIANCE_x64_VM -Files $files
+```
+
+Four things bite, roughly in this order:
+
+- **Clock skew fails the login, not the command you were running.** vSphere SSO tokens carry a ±10 minute tolerance, and beyond it every call fails with an STS lifetime error. Compare `(Get-View ServiceInstance).CurrentTime()` with `[DateTime]::UtcNow`, fix NTP (vCenter's VAMI on port 5480, or the ESXi host if it syncs from there), and start a **fresh** PowerShell — a connection that failed this way stays poisoned for the rest of the session and reports "failed during a previous operation" from then on.
+- **Take every file.** An export is the `.ovf` descriptor, one `.vmdk` per disk and the `.nvram` that holds the EFI variables, plus a `.mf` only when the source item had one. The disks are compressed on the way out, so they will not match the datastore sizes; what must match is the descriptor's own accounting — `([xml](Get-Content NAME.ovf)).Envelope.References.File` lists an `ovf:size` per file to compare against `(Get-Item $_.href).Length`.
+- **Hardware version**, above. The import succeeds regardless; it is creating a VM from the imported item that fails.
+- **The deploy form travels with the descriptor.** Before trusting the item, confirm it still declares every property: `([xml](Get-Content NAME.ovf)).Envelope.VirtualSystem.ProductSection.Property.key` — 11 for a base template, 27 for the NetBox appliance.
+
 ### Non-VMware platforms
 
 > **`ds=` must never reach the installed kernel command line.** The ISO builds boot the installer with `autoinstall ds="nocloud"`, and casper appends everything after `---` to the *installed* system's command line. `ds=` does not mean "prefer this datasource" — cloud-init reads it as "use only this one", which overrides `datasource_list` entirely. Every template built before this was fixed came up pinned (`Kernel command line set to use a single datasource DataSourceNoCloud`, `seed=cmdline`), so VMware guestinfo and OVF were never consulted and nothing delivered through them — the deploy form's `user-data`, `public-keys` and `password`, or a guestinfo-seeded account — was applied. Only what `ovf-settings.py` reads out of the OVF environment itself got through, which is why networking worked and the rest silently did not. The boot commands now keep those parameters before `---`, and `shared/scripts/unpin-cloud-init-datasource.sh` strips any that survive, failing the build if it cannot. The appliance runs it too, since it clones an already-built base and cannot wait for that base to be rebuilt.

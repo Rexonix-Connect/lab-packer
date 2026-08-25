@@ -5,6 +5,7 @@ source "vsphere-iso" "base" {
   firmware             = "efi-secure"
   disk_controller_type = ["pvscsi"]
   guest_os_type        = "windows2019srvNext_64Guest"
+  vm_version           = var.vmHardwareVersion
 
   # ISO configuration: the Windows ISO plus a VMware Tools ISO (var.toolsIsoPath,
   # the ESXi host's bundled copy by default or a pinned datastore ISO). WinPE

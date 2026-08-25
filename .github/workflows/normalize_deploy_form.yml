@@ -45,5 +45,10 @@ jobs:
           # to be given the same descriptor file the build used, or their extra
           # properties end up in an "Other" category.
           VAPP_EXTRA_DESCRIPTORS: ${{ inputs.extra_descriptors == 'none' && '' || format('shared/vapp-descriptors/{0}.json', inputs.extra_descriptors) }}
+          # This workflow exists to repair items that already exist, including
+          # ones built before the hardware version was pinned. Say so, but do
+          # not refuse to fix the form of a template nobody is rebuilding
+          # today; a build failing on the same check is a different matter.
+          VM_HARDWARE_VERSION_CHECK: warn
         run: |
           python3 shared/scripts/normalize-library-ovf.py

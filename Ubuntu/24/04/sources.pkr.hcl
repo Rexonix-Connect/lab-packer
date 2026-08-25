@@ -4,6 +4,7 @@ source "vsphere-iso" "base" {
   RAM                  = var.memoryMb
   disk_controller_type = ["pvscsi"]
   guest_os_type        = "ubuntu64Guest"
+  vm_version           = var.vmHardwareVersion
 
   # ISO configuration
   iso_checksum = ""
