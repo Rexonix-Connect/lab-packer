@@ -6,6 +6,12 @@ source "vsphere-clone" "base" {
   # disk_controller_type for this source type, so the 60 GB root disk comes
   # across as-is and is grown at deploy time instead (the base ships growpart
   # and resize_rootfs for exactly that).
+  #
+  # It inherits the base's virtual hardware version as well, and vsphere-clone
+  # has no vm_version to override it with - the appliance is exactly as
+  # portable as the hardened template it was cloned from, so rebuild that
+  # first after changing its vmHardwareVersion. The post-build normalize step
+  # fails the build if what comes out is too new to deploy.
   content_library_source {
     library = "${var.libraryName}"
     name    = "${var.sourceTemplateName}"

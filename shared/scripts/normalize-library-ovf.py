@@ -10,6 +10,7 @@ properties are preserved after them under "Other"), refreshes the manifest
 hash, and uploads both files back through an update session. Property ids,
 values, types and attributes are untouched.
 """
+import glob
 import hashlib
 import importlib.util
 import os
@@ -37,6 +38,22 @@ OVF_NS = "http://schemas.dmtf.org/ovf/envelope/1"
 # fails the workflow step instead of hanging it.
 HTTP_TIMEOUT = 300
 
+# The highest virtual hardware version a template built here may ship.
+#
+# A template is only as portable as the oldest vCenter it has to reach: one
+# that does not know the version refuses to deploy from the item at all, with
+# "No supported hardware versions among [vmx-21]; supported: [vmx-04 ...
+# vmx-19]", and hardware version cannot be lowered afterwards. 19 is ESXi
+# 7.0 U2 and later.
+#
+# The ISO builds pin it (the vmHardwareVersion variable, cross-checked below).
+# This checks what was actually exported, which is the only check the NetBox
+# appliance can have: it is built by vsphere-clone, which has no vm_version -
+# it inherits whatever its source library item carries. Rebuilding it against
+# a base template built before the pin would silently ship the old version
+# again, and nothing would say so until someone deployed it somewhere else.
+MAX_HARDWARE_VERSION = 19
+
 
 def env(name):
     value = os.environ.get(name, "")
@@ -50,6 +67,72 @@ def register_document_namespaces(xml_text):
     # stable across the ElementTree round trip.
     for prefix, uri in re.findall(r'xmlns(?::(\w+))?="([^"]+)"', xml_text):
         ET.register_namespace(prefix or "", uri)
+
+
+def pinned_hardware_versions():
+    """Every template that pins vmHardwareVersion, and the version it pins.
+
+    Returns (path, version) pairs. A vsphere-clone template never appears:
+    that builder has no vm_version to pin.
+    """
+    root_dir = os.path.dirname(os.path.dirname(_HERE))
+    pattern = re.compile(
+        r'variable\s+"vmHardwareVersion"\s*\{[^}]*?default\s*=\s*(\d+)')
+    pins = []
+    for path in sorted(glob.glob(
+            os.path.join(root_dir, "**", "variables-definitions.pkr.hcl"),
+            recursive=True)):
+        with open(path) as handle:
+            match = pattern.search(handle.read())
+        if match:
+            pins.append((os.path.relpath(path, root_dir), int(match.group(1))))
+    return pins
+
+
+def check_hardware_version(xml_text, mode):
+    """Print the exported hardware version; refuse one too new to deploy.
+
+    mode "warn" downgrades the refusal to a warning, for re-normalizing an
+    item that already exists and cannot be rebuilt from here.
+    """
+    too_new = [pin for pin in pinned_hardware_versions()
+               if pin[1] > MAX_HARDWARE_VERSION]
+    if too_new:
+        sys.exit("normalize-library-ovf: %s pins vmHardwareVersion above the"
+                 " vmx-%d enforced here. Raise MAX_HARDWARE_VERSION in this"
+                 " script to match, once every target vCenter supports it."
+                 % (", ".join("%s (%d)" % pin for pin in too_new),
+                    MAX_HARDWARE_VERSION))
+
+    versions = set()
+    for element in ET.fromstring(xml_text).iter():
+        if element.tag.rsplit("}", 1)[-1] != "VirtualSystemType":
+            continue
+        match = re.match(r"vmx-(\d+)\Z", (element.text or "").strip())
+        if match:
+            versions.add(int(match.group(1)))
+    if not versions:
+        print("normalize-library-ovf: the OVF declares no hardware version")
+        return
+
+    highest = max(versions)
+    print("normalize-library-ovf: exported hardware version vmx-%d" % highest)
+    if highest <= MAX_HARDWARE_VERSION:
+        return
+
+    complaint = (
+        "normalize-library-ovf: this item exports hardware version vmx-%d,"
+        " above the vmx-%d every target vCenter has to support. A vCenter"
+        " that does not know the version refuses to deploy from the item at"
+        " all: \"No supported hardware versions among [vmx-%d]\". Hardware"
+        " version cannot be lowered on an existing template, so this one has"
+        " to be rebuilt. For the NetBox appliance, rebuild its hardened base"
+        " first: vsphere-clone has no vm_version and inherits whatever the"
+        " base carries." % (highest, MAX_HARDWARE_VERSION, highest))
+    if mode == "warn":
+        print("::warning::" + complaint)
+        return
+    sys.exit(complaint)
 
 
 def set_property_text(prop, name, text):
@@ -306,6 +389,11 @@ def main():
         sys.exit("normalize-library-ovf: item is signed (.cert present);"
                  " refusing to modify it")
     ovf_name = ovf_names[0]
+
+    # Before touching the item: an unusable hardware version is worth failing
+    # the build over, and there is nothing to normalize about it.
+    check_hardware_version(files[ovf_name].decode("utf-8"),
+                           os.environ.get("VM_HARDWARE_VERSION_CHECK", ""))
 
     body, foreign_ids = normalize_ovf(files[ovf_name].decode("utf-8"))
     upload = {ovf_name: body}

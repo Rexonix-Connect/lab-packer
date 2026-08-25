@@ -93,6 +93,33 @@ variable "memoryMb" {
   default = 4096
 }
 
+# Virtual hardware version of the built VM, and so of the OVF exported to the
+# content library.
+#
+# Left unset, the builder creates the VM at the build cluster's maximum -
+# vmx-21 on ESXi 8.0 U2 - and a vCenter that does not know that version refuses
+# to deploy from the item at all: "No supported hardware versions among
+# [vmx-21]; supported: [vmx-04 ... vmx-19]". A template built in a lab running
+# newer ESXi than the environment it is deployed into is unusable there, and
+# nothing says so until somebody tries, in a different vCenter, possibly a
+# customer's.
+#
+# 19 is ESXi 7.0 U2 and later. Nothing in these images needs anything newer:
+# UEFI Secure Boot arrived at vmx-13, pvscsi and vmxnet3 long before that, and
+# the vCPU and memory ceilings at 19 are far above anything built here. Lower
+# it for older targets, raise it only for a feature that requires it and only
+# once every target vCenter is new enough. Hardware version can be raised on an
+# existing VM but never lowered, so a template built too new has to be rebuilt.
+variable "vmHardwareVersion" {
+  type    = number
+  default = 19
+
+  validation {
+    condition     = var.vmHardwareVersion >= 13
+    error_message = "Hardware version must be at least 13 (ESXi 6.5, the first to support UEFI Secure Boot)."
+  }
+}
+
 variable "minimumKmodVersion" {
   type    = string
   default = "31+20240202-2ubuntu7.2"
