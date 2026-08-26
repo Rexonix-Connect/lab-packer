@@ -44,6 +44,19 @@ require_root() {
 	fi
 }
 
+# `list` changes nothing; all it needs is to read the two files it reports on.
+# On an appliance that still means root - appliance.json is 0640 root:netbox -
+# but stating the requirement that actually applies keeps the command usable
+# wherever the files are readable, and says which file is the problem when
+# they are not.
+require_readable_config() {
+	if [ ! -r "${CONFIG}" ]; then
+		echo "netbox-plugin: cannot read ${CONFIG}" >&2
+		echo "  It is root:netbox 0640 on an appliance; try: sudo netbox-plugin list" >&2
+		exit 1
+	fi
+}
+
 confirm() {
 	[ "${1:-}" = '--yes' ] && return 0
 	read -r -p "Continue? [y/N] " answer
@@ -326,7 +339,7 @@ PY
 
 case "${1:-}" in
 list)
-	require_root
+	require_readable_config
 	cmd_list
 	;;
 install)
