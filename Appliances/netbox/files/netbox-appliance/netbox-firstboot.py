@@ -836,10 +836,18 @@ def reconcile(props):
     write_nginx_snippets(fqdn, metrics_allow, not os.path.exists(SELF_SIGNED))
     write_proxy(props)
 
-    if state.get('fqdn') != fqdn:
+    # Whether the certificate is the appliance's own is derived here, not
+    # carried forward from the bootstrap: netbox-tls installs an operator's
+    # certificate long after that, and state.json is what netbox-status reads.
+    # Trusting the one-time value made a freshly certified appliance keep
+    # reporting "self-signed" for the rest of its life.
+    self_signed = os.path.exists(SELF_SIGNED)
+    if state.get('fqdn') != fqdn \
+            or state.get('self_signed_certificate') != self_signed:
         state['fqdn'] = fqdn
         state['url'] = 'https://%s/' % (fqdn or (addresses[0] if addresses
                                                  else 'localhost'))
+        state['self_signed_certificate'] = self_signed
         write_file(STATE, json.dumps(state, indent=2, sort_keys=True) + '\n',
                    0o644)
         changed = True
