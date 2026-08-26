@@ -12,8 +12,8 @@
 # backup is taken first - the same rule netbox-upgrade follows.
 set -euo pipefail
 
-NETBOX_ROOT="$(readlink -f /opt/netbox)"
-CONFIG=/etc/netbox/appliance.json
+NETBOX_ROOT="${NETBOX_APPLIANCE_ROOT:-$(readlink -f /opt/netbox)}"
+CONFIG="${NETBOX_APPLIANCE_CONFIG:-/etc/netbox/appliance.json}"
 REQUIREMENTS="${NETBOX_ROOT}/local_requirements.txt"
 PIP="${NETBOX_ROOT}/venv/bin/pip"
 PY="${NETBOX_ROOT}/venv/bin/python"
@@ -130,6 +130,28 @@ raise SystemExit(1)
 PY
 }
 
+# NetBox is not a pip package. It lives in ${NETBOX_ROOT}/netbox and is only
+# importable from there, and a plugin's __init__ imports netbox.plugins - so a
+# bare `python -c "import <module>"` fails for every plugin that does not carry
+# a fallback for NetBox being absent. netbox-attachments has one and passed;
+# netbox-inventory does not and was rejected as broken while being perfectly
+# fine, taking netbox-secrets and netbox-custom-objects with it. Import it the
+# way NetBox itself will: from the project directory, with Django configured.
+#
+# Prints the module's version, or fails with the import error on stderr.
+plugin_import() { # plugin_import <module>
+	(cd "${NETBOX_ROOT}/netbox" &&
+		DJANGO_SETTINGS_MODULE=netbox.settings "${PY}" - "$1" <<'PY'
+import sys
+
+import django
+
+django.setup()
+print(getattr(__import__(sys.argv[1]), "__version__", "?"))
+PY
+	)
+}
+
 serving() {
 	local code
 	code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ 2>/dev/null || true)"
@@ -142,8 +164,7 @@ cmd_list() {
 	while read -r module; do
 		[ -z "${module}" ] && continue
 		any=1
-		if "${PY}" -c "import ${module}" >/dev/null 2>&1; then
-			version="$("${PY}" -c "import ${module} as m; print(getattr(m,'__version__','?'))" 2>/dev/null || echo '?')"
+		if version="$(plugin_import "${module}" 2>/dev/null | tail -n 1)"; then
 			printf '  %-34s importable (%s)\n' "${module}" "${version}"
 		else
 			printf '  %-34s NOT IMPORTABLE - NetBox will not start\n' "${module}"
@@ -206,10 +227,14 @@ cmd_install() {
 	fi
 	echo "netbox-plugin: ${dist} provides the module '${module}'"
 
-	if ! "${PY}" -c "import ${module}" >/dev/null 2>&1; then
+	# stderr is deliberately not swallowed here: the traceback is the diagnosis.
+	if ! version="$(plugin_import "${module}" | tail -n 1)"; then
 		echo "netbox-plugin: '${module}' does not import after installation." >&2
+		echo "  The import error is above. An enabled plugin that cannot be" >&2
+		echo "  imported stops NetBox from starting, so it is not enabled." >&2
 		restore_and_fail
 	fi
+	echo "netbox-plugin: ${module} ${version} imports cleanly"
 
 	set_plugins add "${module}"
 
