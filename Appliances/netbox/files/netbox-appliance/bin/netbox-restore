@@ -10,11 +10,11 @@
 set -euo pipefail
 
 BACKUP_DIR=/srv/netbox/backups
-CONFIG=/etc/netbox/appliance.json
+CONFIG="${NETBOX_APPLIANCE_CONFIG:-/etc/netbox/appliance.json}"
 # The physical path, as netbox-backup uses: /opt/netbox is a symlink to
 # /srv/netbox, the archive stores physical paths, and upgrade.sh resolves the
 # symlink when it records the virtual environment location.
-NETBOX_ROOT="$(readlink -f /opt/netbox)"
+NETBOX_ROOT="${NETBOX_APPLIANCE_ROOT:-$(readlink -f /opt/netbox)}"
 
 if [ "$(id -u)" -ne 0 ]; then
 	echo "netbox-restore: run as root (stops services and replaces the database)" >&2
@@ -112,6 +112,7 @@ fi
 # install would otherwise fail later, with the database already replaced.
 python3 - "${CONFIG}" "${NETBOX_ROOT}" <<'PY' || exit 1
 import json
+import os
 import subprocess
 import sys
 
@@ -121,12 +122,41 @@ with open(config) as handle:
 if not plugins:
     raise SystemExit(0)
 
+# Imported the way NetBox will import them: from the project directory, with
+# Django configured. NetBox is not a pip package - it is only importable from
+# ${root}/netbox - so a bare `python -c "import <module>"` fails for every
+# plugin whose __init__ imports netbox.plugins without a fallback, which is
+# most of them. That check called healthy plugins missing and refused to
+# restore backups that would have restored perfectly.
+PROBE = """
+import sys
+
+import django
+
+django.setup()
+
 missing = []
-for name in plugins:
-    probe = subprocess.run([root + "/venv/bin/python", "-c",
-                            "import %s" % name], capture_output=True)
-    if probe.returncode != 0:
-        missing.append(name)
+for name in sys.argv[1:]:
+    try:
+        __import__(name)
+    except Exception as exc:
+        missing.append("%s (%s)" % (name, exc))
+print("\\n".join(missing))
+"""
+
+environment = dict(os.environ, DJANGO_SETTINGS_MODULE="netbox.settings")
+probe = subprocess.run([root + "/venv/bin/python", "-c", PROBE] + plugins,
+                       cwd=root + "/netbox", env=environment,
+                       capture_output=True, text=True)
+if probe.returncode != 0:
+    # django.setup() itself failed - which it does when an enabled plugin
+    # cannot be imported at all, so report it rather than guessing.
+    sys.stderr.write("netbox-restore: NetBox could not start with the "
+                     "backup's plugins:\n")
+    sys.stderr.write((probe.stderr or probe.stdout).strip() + "\n")
+    sys.stderr.write("  The database has NOT been touched.\n")
+    raise SystemExit(1)
+missing = [line for line in probe.stdout.splitlines() if line.strip()]
 
 if missing:
     sys.stderr.write(
