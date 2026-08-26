@@ -129,6 +129,15 @@ jobs:
             echo "private_key_file=${RUNNER_TEMP}/netbox-build/id_ed25519"
           } >> $GITHUB_OUTPUT
 
+      # netbox-firstboot.py is the appliance: it reads the deploy form, writes
+      # the configuration, issues the certificate and decides what to restart.
+      # None of that can be exercised on a template that has already been
+      # built, so its logic is checked here, before the build is worth
+      # spending. The checks need nothing but python3.
+      - name: Check the appliance first-boot logic
+        run: |
+          python3 Appliances/netbox/tests/test_firstboot.py
+
       # The descriptor table is shared with the five OS templates, and an
       # extension that leaked into their form would only be noticed in a
       # deploy wizard. Assert both shapes before spending a build.
