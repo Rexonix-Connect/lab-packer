@@ -134,10 +134,24 @@ jobs:
       # None of that can be exercised on a template that has already been
       # built, so its logic is checked here, before the build is worth
       # spending. The checks need nothing but python3.
-      - name: Check the appliance first-boot and plugin logic
+      - name: Check the appliance logic
         run: |
           python3 Appliances/netbox/tests/test_firstboot.py
-          bash Appliances/netbox/tests/test_plugin_import.sh
+          # nullglob so an empty directory does not hand bash the pattern
+          # itself, and an explicit count because the answer to "there are no
+          # checks to run" is to fail the step that exists to run them, not to
+          # pass quietly. This repository has been bitten by silently-skipped
+          # checks more than once.
+          shopt -s nullglob
+          checks=(Appliances/netbox/tests/*.sh)
+          if [ "${#checks[@]}" -eq 0 ]; then
+            echo "::error::No shell checks in Appliances/netbox/tests/" >&2
+            exit 1
+          fi
+          for check in "${checks[@]}"; do
+            echo "== ${check}"
+            bash "${check}"
+          done
 
       # The descriptor table is shared with the five OS templates, and an
       # extension that leaked into their form would only be noticed in a

@@ -3,7 +3,7 @@
 # to stay quick, quiet and safe to run as any account.
 set -uo pipefail
 
-STATE_DIR=/var/lib/netbox-appliance
+STATE_DIR="${NETBOX_APPLIANCE_STATE_DIR:-/var/lib/netbox-appliance}"
 STATE="${STATE_DIR}/state.json"
 UNITS=(netbox netbox-rq nginx postgresql redis-server)
 
@@ -58,7 +58,20 @@ printf '\n'
 # actually matters. They can disagree - a deployment once came up with nginx
 # active, NetBox inactive and a bootstrap that reported success, and nothing on
 # the appliance said it was not serving.
-code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ 2>/dev/null || true)"
+probe() { # probe <seconds>
+	curl -sk --max-time "${1}" -o /dev/null -w '%{http_code}' \
+		https://127.0.0.1/login/ 2>/dev/null || true
+}
+
+code="$(probe 5)"
+if [ "${code}" != '200' ]; then
+	# A cold gunicorn answers its first request slowly - noticeably so with
+	# several plugins loading - and five seconds is not always enough. This
+	# drives the MOTD, so the fast path stays fast, but "NO" has to mean it,
+	# not "the appliance was still waking up when I asked". Measured on a
+	# four-plugin appliance: 5.4s cold, 0.01s warm.
+	code="$(probe 20)"
+fi
 if [ "${code}" = '200' ]; then
 	echo "  Serving   yes (HTTP 200)"
 else
