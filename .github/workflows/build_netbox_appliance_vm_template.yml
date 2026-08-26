@@ -134,9 +134,10 @@ jobs:
       # None of that can be exercised on a template that has already been
       # built, so its logic is checked here, before the build is worth
       # spending. The checks need nothing but python3.
-      - name: Check the appliance first-boot logic
+      - name: Check the appliance first-boot and plugin logic
         run: |
           python3 Appliances/netbox/tests/test_firstboot.py
+          bash Appliances/netbox/tests/test_plugin_import.sh
 
       # The descriptor table is shared with the five OS templates, and an
       # extension that leaked into their form would only be noticed in a
