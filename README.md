@@ -431,6 +431,8 @@ It reads the deploy form through the base image's own `/usr/local/sbin/ovf-setti
 
 On every subsequent boot `netbox-reconcile.service` re-derives the host names and, if the certificate is one the appliance generated, reissues it when the addresses change. It never touches secrets, the database or the superuser — so cloning a *running* appliance gives you a working copy of it, which is what cloning a running system should mean.
 
+Running it by hand — `systemctl restart netbox-reconcile` — is safe and returns promptly. It is ordered `Before=` `netbox`, `netbox-rq` and `nginx`, so when it runs as a unit it *queues* the restarts a change needs rather than waiting on them: systemd will not run a job ordered after a unit that is still activating, so waiting deadlocks until the unit's five-minute start timeout kills it mid-run. Run straight from a shell it waits as usual.
+
 ### Changing the name it answers to
 
 `netbox.fqdn` is a deploy-form property, but it is not read only at deploy time: `netbox-reconcile` re-reads the OVF environment on **every** boot and re-derives the appliance's identity from it. Changing the name is therefore a vCenter edit, not a login:

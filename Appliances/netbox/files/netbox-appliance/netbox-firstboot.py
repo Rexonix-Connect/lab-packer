@@ -47,6 +47,7 @@ KEY = os.path.join(TLS_DIR, 'netbox.key')
 SELF_SIGNED = os.path.join(TLS_DIR, '.self-signed')
 
 CREDENTIALS = '/root/netbox-credentials.txt'
+CGROUP = '/proc/self/cgroup'
 ISSUE = '/etc/issue.d/60-netbox.issue'
 
 NETBOX_ROOT = '/opt/netbox'
@@ -685,6 +686,23 @@ def system_is_booting():
     return result.stdout.strip() in ('initializing', 'starting')
 
 
+def in_appliance_unit():
+    """Are we running as one of the appliance's own units, not from a shell?
+
+    INVOCATION_ID would be the obvious test and is the wrong one: a service
+    passes it to everything it spawns, an SSH login shell included, so a
+    hand-run reconcile over SSH would look like a unit. The cgroup names the
+    unit this process is actually in.
+    """
+    try:
+        with open(CGROUP) as handle:
+            cgroup = handle.read()
+    except OSError:
+        return False
+    return ('netbox-reconcile.service' in cgroup
+            or 'netbox-bootstrap.service' in cgroup)
+
+
 def restart_services():
     """Pick up the new configuration - but never during boot.
 
@@ -706,13 +724,33 @@ def restart_services():
     that reported success. So at boot this does nothing at all and lets the
     ordering start them; only a manual re-run, where the services are already
     up and there is no queued job to clobber, actually restarts anything.
+
+    A manual re-run arrives two ways, and they are not the same: from a shell,
+    where nothing is ordered around us and we can wait for the jobs, or inside
+    a `systemctl restart` of our own unit, where waiting deadlocks. See below.
     """
     if system_is_booting():
         log('boot in progress; netbox, netbox-rq and nginx start from their'
             ' own ordering')
         return
-    run(['systemctl', 'try-reload-or-restart',
-         'netbox.service', 'netbox-rq.service', 'nginx.service'], check=False)
+
+    command = ['systemctl', 'try-reload-or-restart',
+               'netbox.service', 'netbox-rq.service', 'nginx.service']
+    if in_appliance_unit():
+        # Outside boot, but still inside this unit's own start job - a manual
+        # `systemctl restart netbox-reconcile`, or netbox-tls asking for one.
+        # Both units are ordered Before= all three services, so systemd will
+        # not run their jobs until this unit finishes activating, and a
+        # blocking systemctl sits waiting for exactly those jobs. The deadlock
+        # ends at TimeoutStartSec, five minutes later, with the unit killed
+        # mid-run: on the appliance where this first showed up, the reload
+        # nginx needed to pick up a just-installed certificate never happened.
+        # Enqueueing costs the exit status of three jobs that are visible in
+        # the journal anyway; waiting costs the run.
+        command.insert(1, '--no-block')
+        log('running as a unit; queueing the restarts instead of waiting on'
+            ' jobs ordered after this one')
+    run(command, check=False)
 
 
 def bootstrap(props):
