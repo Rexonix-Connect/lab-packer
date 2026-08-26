@@ -167,7 +167,20 @@ install)
 	# Rewrites the nginx snippets from the marker's absence - which is what
 	# sends HSTS - and refreshes the TLS line netbox-status reports. Restart,
 	# not start: the unit is RemainAfterExit=yes and start would do nothing.
-	systemctl restart netbox-reconcile.service
+	#
+	# Not fatal. The certificate is already on disk and nginx has accepted it,
+	# so the reload below is the step that actually puts it in service and has
+	# to happen either way: under `set -e` a failing reconcile used to abort
+	# this script one line short of it, leaving the appliance serving the old
+	# certificate with no message saying so. A reconcile that fails costs HSTS
+	# and a stale netbox-status TLS line, and is worth reporting - not worth
+	# withholding the certificate over.
+	if ! systemctl restart netbox-reconcile.service; then
+		echo "netbox-tls: warning - netbox-reconcile failed. The certificate is" >&2
+		echo "  installed and served, but HSTS is not switched on and the TLS" >&2
+		echo "  line in netbox-status is stale until it runs (a reboot will do" >&2
+		echo "  it). Check: journalctl -u netbox-reconcile -n 50" >&2
+	fi
 	systemctl reload nginx.service
 
 	rm -f "${CERT}.previous" "${KEY}.previous" "${SELF_SIGNED}.previous"
