@@ -63,8 +63,20 @@ probe() { # probe <seconds>
 		https://127.0.0.1/login/ 2>/dev/null || true
 }
 
+# 2xx or 3xx means NetBox answered, which is the question being asked. A
+# plugin that owns the login flow - OTP, SSO - redirects /login/, and
+# insisting on 200 would report a healthy appliance as down for the rest of
+# its life. Used for both decisions below: whether to wait longer, and what
+# to report.
+answered() { # answered <http-code>
+	case "${1}" in
+	2?? | 3??) return 0 ;;
+	esac
+	return 1
+}
+
 code="$(probe 5)"
-if [ "${code}" != '200' ]; then
+if ! answered "${code}"; then
 	# A cold gunicorn answers its first request slowly - noticeably so with
 	# several plugins loading - and five seconds is not always enough. This
 	# drives the MOTD, so the fast path stays fast, but "NO" has to mean it,
@@ -72,8 +84,8 @@ if [ "${code}" != '200' ]; then
 	# four-plugin appliance: 5.4s cold, 0.01s warm.
 	code="$(probe 20)"
 fi
-if [ "${code}" = '200' ]; then
-	echo "  Serving   yes (HTTP 200)"
+if answered "${code}"; then
+	echo "  Serving   yes (HTTP ${code})"
 else
 	echo "  Serving   NO (HTTP ${code:-000}) - journalctl -u netbox-bootstrap -b"
 	unhealthy=1

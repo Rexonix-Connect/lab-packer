@@ -92,6 +92,21 @@ run 502 502
 grep -q 'Serving   NO (HTTP 502)' <<<"${output}"
 check "a 502 is reported as 502" "$?" "${output}"
 
+# A plugin that owns the login flow redirects /login/. netbox-otp-plugin does
+# exactly this, and an earlier version of the check called it a dead appliance
+# and had netbox-plugin uninstall a plugin that was working.
+run 302 302
+grep -q 'Serving   yes (HTTP 302)' <<<"${output}"
+check "a redirect is serving, not a fault" "$?" "${output}"
+check "and is not retried" "$([ "${calls}" = 1 ] && echo 0 || echo 1)" \
+	"asked ${calls} time(s)"
+check "exit status is 0" "${status}"
+
+# 404 is not "answered well enough": something is answering, but not NetBox.
+run 404 404
+grep -q 'Serving   NO (HTTP 404)' <<<"${output}"
+check "a 404 is still NO" "$?" "${output}"
+
 echo
 if [ "${failures}" -eq 0 ]; then
 	echo "ALL CHECKS PASSED"
