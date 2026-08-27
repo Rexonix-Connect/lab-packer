@@ -165,10 +165,23 @@ PY
 	)
 }
 
+# Did NetBox answer at all? Not "did it answer 200": a plugin that changes the
+# login flow - OTP, SSO - redirects /login/, and 302 there is a working
+# appliance. Demanding 200 made this check uninstall netbox-otp-plugin while
+# gunicorn was serving pages perfectly happily. 4xx, 5xx and no answer at all
+# still mean not serving.
 serving() {
 	local code
-	code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/login/ 2>/dev/null || true)"
-	[ "${code}" = '200' ]
+	code="$(http_code)"
+	case "${code}" in
+	2?? | 3??) return 0 ;;
+	esac
+	return 1
+}
+
+http_code() {
+	curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
+		https://127.0.0.1/login/ 2>/dev/null || true
 }
 
 cmd_list() {
@@ -217,6 +230,19 @@ cmd_install() {
 		mv -f "${CONFIG}.pre-plugin" "${CONFIG}"
 		[ -f "${REQUIREMENTS}.pre-plugin" ] && mv -f "${REQUIREMENTS}.pre-plugin" "${REQUIREMENTS}"
 		systemctl restart netbox.service netbox-rq.service || true
+		# Say whether the revert actually worked. Printing "reverting" and
+		# exiting leaves the operator to find out for themselves whether the
+		# appliance came back.
+		for _ in $(seq 1 12); do
+			serving && break
+			sleep 5
+		done
+		if serving; then
+			echo "netbox-plugin: reverted; the appliance is serving again." >&2
+		else
+			echo "netbox-plugin: reverted, but the appliance is STILL not" >&2
+			echo "  answering (HTTP $(http_code)). journalctl -u netbox -n 50" >&2
+		fi
 		exit 1
 	}
 
@@ -276,8 +302,10 @@ cmd_install() {
 		sleep 5
 	done
 	if ! serving; then
-		echo "netbox-plugin: the appliance stopped serving after enabling ${module}." >&2
-		echo "  The plugin is probably incompatible with NetBox $(git -C "${NETBOX_ROOT}" describe --tags --always)." >&2
+		echo "netbox-plugin: the appliance answers HTTP $(http_code) after" >&2
+		echo "  enabling ${module}, on NetBox $(git -C "${NETBOX_ROOT}" describe --tags --always)." >&2
+		echo "  The end of the NetBox journal, which is the actual diagnosis:" >&2
+		journalctl -u netbox -n 20 --no-pager 2>/dev/null | sed 's/^/    /' >&2 || true
 		echo "  Reverting the configuration; the migrations it applied remain." >&2
 		echo "  Restore the backup taken above if the database needs rolling back." >&2
 		restore_and_fail
