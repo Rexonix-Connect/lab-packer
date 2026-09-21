@@ -125,6 +125,21 @@ if [ -e "${CONFIG_DIR}/agent/agent.yaml" ]; then
 	exit 1
 fi
 
+echo '> Verifying the shared appliance modules ...'
+# Imported by path at first boot, so a module that did not land, or that
+# python cannot import, is a deployment that fails to bootstrap. Catch it
+# here instead.
+[ -f /usr/local/lib/lab-appliance/proxy.py ]
+python3 - <<'PYCHECK'
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    'proxy', '/usr/local/lib/lab-appliance/proxy.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert hasattr(module, 'apply') and hasattr(module, 'Spec'), dir(module)
+print('> shared proxy module imports')
+PYCHECK
+
 echo '> Verifying the data disk layout ...'
 findmnt --noheadings --mountpoint /srv/diode
 actual_root="$(docker info --format '{{.DockerRootDir}}')"

@@ -39,6 +39,38 @@ import subprocess
 import sys
 import traceback
 
+SHARED_DIR = '/usr/local/lib/lab-appliance'
+
+
+def _load_shared(name):
+    """Import a shared appliance module by path.
+
+    Installed by install-firstboot.sh from shared/appliance/ in the
+    repository. Imported by path rather than put on sys.path so that a stray
+    module of the same name elsewhere cannot shadow it.
+    """
+    candidates = [os.path.join(SHARED_DIR, '%s.py' % name)]
+    # Running from a checkout, for the build-time checks: the module has not
+    # been installed into the guest yet. Only ever a fallback - on a deployed
+    # appliance the installed copy is the one that exists.
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   '..', '..', '..', '..', 'shared',
+                                   'appliance', '%s.py' % name))
+    for path in candidates:
+        if os.path.exists(path):
+            break
+    else:
+        raise SystemExit('diode-firstboot: shared module %r not found in %s'
+                         % (name, ', '.join(candidates)))
+    spec = importlib.util.spec_from_file_location('lab_appliance_%s' % name,
+                                                  path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+shared_proxy = _load_shared('proxy')
+
 STATE_DIR = '/var/lib/diode-appliance'
 MARKER = os.path.join(STATE_DIR, 'bootstrapped')
 FAILURE = os.path.join(STATE_DIR, 'failed')
@@ -71,10 +103,6 @@ OVF_SETTINGS = '/usr/local/sbin/ovf-settings.py'
 
 DNS_NAME_RE = re.compile(
     r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$')
-PROXY_RE = re.compile(r'^https?://'
-                      r'([^\s/@:]+(:[^\s/@]*)?@)?'
-                      r'[A-Za-z0-9._\[\]:-]+'
-                      r'(:[0-9]{1,5})?/?$')
 UNSET_HOSTNAMES = ('localhost', 'localhost.localdomain', 'ubuntu', '')
 
 # The three OAuth2 clients the stack bootstraps. Each gets its own generated
@@ -489,27 +517,45 @@ def write_nginx_snippets(fqdn, metrics_allow, operator_certificate):
 # Outbound proxy
 #
 
+# The rules - strict validation rather than escaping, a filtered bypass list,
+# redaction before logging, and re-applying on every boot so a cleared field
+# clears the proxy - live in shared/appliance/proxy.py, shared with the NetBox
+# appliance. What stays here is only what is specific to this one.
+#
+# Just the Docker daemon drop-in. dockerd is what pulls images, and a unit
+# does not inherit /etc/environment, so without this a proxied site cannot
+# reach a registry - which is the failure diode-upgrade would otherwise hit
+# with no explanation.
+#
+# The containers themselves deliberately get NO proxy. What they talk to is
+# NetBox, on the customer's own network: routing that through an internet
+# proxy would break a working appliance rather than fix a broken one. An
+# operator who genuinely needs it can set it per service in the compose
+# environment.
+PROXY_SPEC = shared_proxy.Spec(
+    proxy_property='diode.proxy',
+    bypass_property='diode.no-proxy',
+    apt_config='/etc/apt/apt.conf.d/95diode-proxy',
+    dropins=('/etc/systemd/system/docker.service.d/30-proxy.conf',),
+    attribution='diode-firstboot.py',
+)
+
+
 def write_proxy(props):
-    """Apply the deploy form's proxy to everything on this appliance.
+    """Apply the deploy form's proxy, and restart Docker only if it moved.
 
-    Four places, because none of them reads the others: /etc/environment for
-    login sessions, apt.conf for unattended-upgrades, a systemd drop-in on
-    docker.service so image pulls go through it, and the Docker client
-    configuration so containers inherit it.
-
-    TODO(scaffold): lift the validation, redaction and bypass-list handling
-    from Appliances/netbox/files/netbox-appliance/netbox-firstboot.py rather
-    than reimplementing them - the parsing rules there (refuse a value that
-    could terminate one of the three quoting contexts instead of escaping it
-    three ways) apply unchanged here, and the two copies must not drift.
+    dockerd reads its proxy from the unit environment at start, so a change
+    needs a restart to take effect. The Result's `changed` flag is what stops
+    that being a restart on every single boot: with live-restore enabled in
+    daemon.json the running containers survive it, but a stack that bounces
+    for no reason is still a stack an operator has to explain.
     """
-    url = prop(props, 'diode.proxy')
-    if url and not PROXY_RE.match(url):
-        log('ignoring the proxy from the deploy form: %r is not'
-            ' http://host[:port]' % re.sub(r'//[^@]*@', '//***@', url))
-        url = ''
-    log('proxy configuration is not implemented in this scaffold'
-        if url else 'no outbound proxy configured')
+    result = shared_proxy.apply(props, PROXY_SPEC, log, run=subprocess.run)
+    if result.changed and capture(['systemctl', 'is-active', 'docker']) == 'active':
+        log('restarting Docker to pick up the proxy change'
+            ' (containers survive it: live-restore is on)')
+        run(['systemctl', 'restart', 'docker'], check=False)
+    return result
 
 
 def apply_time_zone(props):

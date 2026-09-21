@@ -136,6 +136,8 @@ jobs:
       # spending. The checks need nothing but python3.
       - name: Check the appliance logic
         run: |
+          # Shared by both appliances, so it runs in both builds.
+          python3 shared/tests/test_proxy.py
           python3 Appliances/netbox/tests/test_firstboot.py
           # nullglob so an empty directory does not hand bash the pattern
           # itself, and an explicit count because the answer to "there are no

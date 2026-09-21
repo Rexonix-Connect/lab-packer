@@ -4,6 +4,25 @@
 # stack with empty passwords.
 set -euo pipefail
 
+echo '> Installing the shared appliance modules ...'
+# One copy in the repository, installed into every image, imported by path at
+# run time. The outbound-proxy rules in particular are not obvious enough to
+# be worth maintaining twice - strict validation instead of escaping, because
+# the value lands in three differently quoted contexts - and two copies would
+# drift.
+install -d -m 0755 -o root -g root /usr/local/lib/lab-appliance
+for module in "${SHARED_DIR}"/*.py; do
+	install -m 0644 -o root -g root "${module}" \
+		"/usr/local/lib/lab-appliance/$(basename "${module}")"
+	python3 -m py_compile "/usr/local/lib/lab-appliance/$(basename "${module}")"
+done
+# An empty SHARED_DIR would leave the loop a no-op and the failure would only
+# appear at first boot, on a deployed appliance, as a missing module.
+if [ ! -f /usr/local/lib/lab-appliance/proxy.py ]; then
+	echo '> the shared proxy module was not installed' >&2
+	exit 1
+fi
+
 echo '> Installing the first-boot bootstrap ...'
 install -m 0700 -o root -g root \
 	"${PAYLOAD_DIR}/diode-firstboot.py" /usr/local/sbin/diode-firstboot.py

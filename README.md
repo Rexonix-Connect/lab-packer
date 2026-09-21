@@ -508,6 +508,8 @@ It is re-applied on **every** boot, like the network settings: a customer's prox
 
 The proxy URL must be `http://host[:port]` or `https://...`, optionally with `user:password@` — though prefer an unauthenticated proxy where possible: the apt configuration and the systemd drop-ins are written `0600`, and the journal only ever sees the URL with credentials redacted, but `/etc/environment` is world-readable by convention and necessity, so a credentialed URL there is visible to local accounts. Anything else is refused and logged rather than escaped — the value lands in an apt configuration string, a systemd `Environment=` line and `/etc/environment`, which quote differently, and a value that could terminate one of those strings is not worth escaping three ways. Bypass entries are filtered to plain hosts, domains and CIDRs on the same reasoning.
 
+The logic itself lives in `shared/appliance/proxy.py`, not in `netbox-firstboot.py`, because the Diode appliance needs exactly the same rules and two copies would drift. Each appliance supplies only what differs — its form properties, its apt file, and which units need a drop-in. It is covered by `shared/tests/test_proxy.py`, which runs against a temporary tree in both appliance builds.
+
 #### Plugins
 
 Plugins are configuration, not file edits: `configuration.py` reads `PLUGINS` and `PLUGINS_CONFIG` out of `/etc/netbox/appliance.json`, and `netbox-reconcile` only ever rewrites `allowed_hosts`, so an operator's plugin set survives reboots and address changes untouched.
@@ -642,6 +644,16 @@ sudo diode-agent policy test /etc/diode/agent/policies.d/core-switches.yaml
 `policy test` exists for a specific reason: a discovery policy is an nmap sweep of somebody's production network, and running one to find out what it does is not a reasonable way to find out what it does. It dry-runs the policy and prints the entities it *would* ingest.
 
 The shipped default policy is a **ping scan**, not the port sweep a bare target list gives you — `nmap <targets>` means `-sS -p1-1000` against every host, which on a production network is both slow and conspicuous. Widen it deliberately, with a policy in `policies.d/`, once someone has agreed to it.
+
+### Outbound proxy
+
+Two deploy-form fields, `diode.proxy` and `diode.no-proxy`, point the appliance's own outbound traffic at a customer proxy. It shares `shared/appliance/proxy.py` with the NetBox appliance, so the rules are identical: strict validation rather than escaping (the value lands in an apt configuration string, a systemd `Environment=` line and `/etc/environment`, which quote differently), a bypass list filtered to plain hosts, domains and CIDRs, credentials redacted before anything reaches the journal, and re-application on **every** boot so clearing the field clears the proxy rather than leaving a stale one.
+
+What differs on this appliance is where it lands. `/etc/environment` for login sessions, `/etc/apt/apt.conf.d/95diode-proxy` for apt, and a systemd drop-in on **`docker.service`** — because `dockerd` is what pulls images, and a unit does not inherit `/etc/environment`. Without that drop-in a proxied site cannot reach a registry, which is the failure `diode-upgrade` would otherwise hit with no explanation.
+
+**The containers deliberately get no proxy.** What they talk to is NetBox, on the customer's own network; routing that through an internet proxy would break a working appliance rather than fix a broken one. An operator who genuinely needs it can set it per service in the compose environment.
+
+`dockerd` reads its proxy at daemon start, so a change needs a restart. The shared module reports whether anything actually moved, and the appliance restarts Docker only then — `live-restore` is on in `daemon.json`, so the running containers survive it, but a stack that bounces on every boot for no reason is still a stack somebody has to explain.
 
 ### Upgrades
 

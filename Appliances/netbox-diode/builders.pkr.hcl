@@ -48,6 +48,15 @@ build {
     destination = "/tmp"
   }
 
+  # Shared appliance Python installed into every image in this repository.
+  # It is uploaded separately rather than copied into the payload because it
+  # is genuinely shared: one copy in the repository, read by both appliances'
+  # first-boot scripts, so the rules in it cannot drift between them.
+  provisioner "file" {
+    source      = "../../shared/appliance"
+    destination = "/tmp"
+  }
+
   # The seeded build account has NOPASSWD sudo, so unlike the ISO builds no
   # password is piped into sudo here.
   provisioner "shell" {
@@ -57,6 +66,7 @@ build {
       "AGENT_VERSION=${var.agentVersion}",
       "BUILD_USERNAME=${var.buildUsername}",
       "PAYLOAD_DIR=/tmp/diode-appliance",
+      "SHARED_DIR=/tmp/appliance",
     ]
     scripts = [
       "./files/wait-for-base.sh",

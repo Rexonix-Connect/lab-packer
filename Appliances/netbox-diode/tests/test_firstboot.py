@@ -130,6 +130,24 @@ for placeholder, client in fb.CLIENT_SECRETS:
     check("bootstrap generates a secret for %s" % client,
           "'%s': generate_secret()" % client in source)
 
+# --- the proxy spec ----------------------------------------------------
+# The rules live in shared/appliance/proxy.py and are tested there. What is
+# worth asserting on this side is that this appliance wired the right things
+# into them: its own form properties, its own apt file, and a drop-in for the
+# Docker daemon - dockerd is what pulls images, and without it a proxied site
+# cannot reach a registry.
+check("the proxy spec reads this appliance's form properties",
+      fb.PROXY_SPEC.proxy_property == "diode.proxy"
+      and fb.PROXY_SPEC.bypass_property == "diode.no-proxy",
+      (fb.PROXY_SPEC.proxy_property, fb.PROXY_SPEC.bypass_property))
+check("the apt configuration does not collide with the NetBox appliance's",
+      fb.PROXY_SPEC.apt_config == "/etc/apt/apt.conf.d/95diode-proxy",
+      fb.PROXY_SPEC.apt_config)
+check("the Docker daemon gets a drop-in so image pulls are proxied",
+      fb.PROXY_SPEC.dropins
+      == ("/etc/systemd/system/docker.service.d/30-proxy.conf",),
+      fb.PROXY_SPEC.dropins)
+
 # --- compose/env agreement ---------------------------------------------
 # Upstream adds environment variables between releases. A variable the compose
 # file references but env.template does not set makes the container start with
