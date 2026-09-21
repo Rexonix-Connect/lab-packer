@@ -18,7 +18,8 @@ build {
   # The data disk cannot be declared in the source block - the plugin rejects a
   # storage block for an OVF-backed content library source - so it is attached
   # through the vCenter API while the build VM is running, before anything in
-  # the guest needs it.
+  # the guest needs it. Docker's data root is moved onto it before any image is
+  # pulled, so the pulled images land on the data disk rather than the root.
   provisioner "shell-local" {
     environment_vars = [
       "VCENTER_SERVER=${var.vCenterServer}",
@@ -37,14 +38,13 @@ build {
     destination = "/tmp/packer-finalize-template.sh"
   }
 
-  # Everything that stays in the image: the first-boot bootstrap, the NetBox
-  # configuration loader, systemd units, nginx and fail2ban configuration and
-  # the operator CLIs. Installed by the scripts below, never executed from
-  # /tmp. No trailing slash on the source, so the directory itself lands in
-  # /tmp rather than its contents landing in a directory scp would have to
-  # create.
+  # Everything that stays in the image: the first-boot bootstrap, the vendored
+  # compose project, systemd units, nginx and fail2ban configuration and the
+  # operator CLIs. Installed by the scripts below, never executed from /tmp.
+  # No trailing slash on the source, so the directory itself lands in /tmp
+  # rather than its contents landing in a directory scp would have to create.
   provisioner "file" {
-    source      = "./files/netbox-appliance"
+    source      = "./files/diode-appliance"
     destination = "/tmp"
   }
 
@@ -62,10 +62,10 @@ build {
   provisioner "shell" {
     execute_command = "{{.Vars}} sudo -n -E bash '{{.Path}}'"
     environment_vars = [
-      "NETBOX_VERSION=${var.netboxVersion}",
-      "NETBOX_REPO_URL=${var.netboxRepoUrl}",
+      "DIODE_VERSION=${var.diodeVersion}",
+      "AGENT_VERSION=${var.agentVersion}",
       "BUILD_USERNAME=${var.buildUsername}",
-      "PAYLOAD_DIR=/tmp/netbox-appliance",
+      "PAYLOAD_DIR=/tmp/diode-appliance",
       "SHARED_DIR=/tmp/appliance",
     ]
     scripts = [
@@ -76,24 +76,27 @@ build {
       "../../shared/scripts/unpin-cloud-init-datasource.sh",
       "./files/install-datadisk.sh",
       "./files/install-packages.sh",
-      # Before install-netbox.sh on purpose. This step ends in `nginx -t`, and
-      # installing NetBox takes ten minutes or so, so validating the web server
-      # configuration first turns a bad directive into a four-minute failure
-      # rather than a fourteen-minute one. It has no dependency on NetBox being
-      # installed: nginx does not check that an alias target exists.
+      # Before install-diode.sh: this moves Docker's data root onto the data
+      # disk, and every image pulled afterwards has to land there.
+      "./files/install-docker.sh",
+      # Before install-diode.sh for the same reason the NetBox build validates
+      # nginx early: a bad directive should fail in four minutes, not after
+      # several gigabytes of image pulls.
       "./files/install-nginx.sh",
-      "./files/install-netbox.sh",
+      "./files/install-diode.sh",
+      "./files/install-agent.sh",
       "./files/install-ops.sh",
       "./files/install-firstboot.sh",
     ]
   }
 
-  # Proves the appliance actually serves NetBox before it can become a
-  # template, then re-asserts the hardened baseline and cleans the guest.
+  # Proves the stack actually comes up before it can become a template, then
+  # re-asserts the hardened baseline and cleans the guest.
   provisioner "shell" {
     execute_command = "{{.Vars}} sudo -n -E bash '{{.Path}}'"
     environment_vars = [
-      "NETBOX_VERSION=${var.netboxVersion}",
+      "DIODE_VERSION=${var.diodeVersion}",
+      "AGENT_VERSION=${var.agentVersion}",
       "BUILD_USERNAME=${var.buildUsername}",
     ]
     scripts           = ["./files/verify.sh"]
@@ -101,9 +104,9 @@ build {
   }
 
   # The vapp block only sets ids and values; enrich the deploy form with
-  # categories, labels, descriptions and ordering before the export. The
-  # NetBox properties do not exist on the cloned VM yet, so the descriptor
-  # file both creates and documents them.
+  # categories, labels, descriptions and ordering before the export. The Diode
+  # properties do not exist on the cloned VM yet, so the descriptor file both
+  # creates and documents them.
   provisioner "shell-local" {
     environment_vars = [
       "VCENTER_SERVER=${var.vCenterServer}",
@@ -112,7 +115,7 @@ build {
       "VCENTER_INSECURE=${var.vCenterInsecureConnection}",
       "VCENTER_DATACENTER=${var.vCenterDatacenterName}",
       "VM_NAME=${var.vmName}",
-      "VAPP_EXTRA_DESCRIPTORS=../../shared/vapp-descriptors/netbox.json",
+      "VAPP_EXTRA_DESCRIPTORS=../../shared/vapp-descriptors/netbox-diode.json",
     ]
     command = "python3 ../../shared/scripts/set-vapp-descriptors.py"
   }

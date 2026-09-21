@@ -1,0 +1,36 @@
+#!/bin/bash
+# The on-box NetBox Discovery agent.
+#
+#   diode-agent status
+#   diode-agent enable | disable
+#   diode-agent credentials            set DIODE_CLIENT_ID / _SECRET (0600)
+#   diode-agent policy list
+#   diode-agent policy add FILE        merge a policy from policies.d/
+#   diode-agent policy test FILE       run it once, print what it WOULD ingest
+#
+# `policy test` exists because of what these policies are: a discovery policy
+# is an nmap sweep of somebody's production network. Running one to find out
+# what it does is not a reasonable way to find out what it does. The agent
+# supports a dry run that prints the entities rather than sending them, and
+# that is what this wraps.
+#
+# Credentials never come from the deploy form. SNMP communities and SSH keys
+# for a customer's estate are worth far more than one admin password, and a
+# vApp property is stored in the VM configuration in cleartext where any
+# vCenter user who can see the VM can read it.
+#
+# TODO(scaffold): implement. `policy add` is the only part with real work in
+# it - the agent takes a single agent.yaml, so this has to merge the file's
+# policy fragment into the rendered config under the right backend key, keep
+# the result valid YAML, restart the agent, and put the previous config back
+# if it does not come up.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-agent: run as root (reads /etc/diode/agent, which is 0750)" >&2
+	echo "  try: sudo diode-agent $*" >&2
+	exit 1
+fi
+
+echo "diode-agent: not implemented in this scaffold" >&2
+exit 1

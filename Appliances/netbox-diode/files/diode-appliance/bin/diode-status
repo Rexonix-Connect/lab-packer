@@ -1,0 +1,78 @@
+#!/bin/bash
+# What this appliance is, what it is running, and whether it works.
+#
+# Safe to run as any account - it drives the MOTD. Anything it cannot see
+# because of permissions is reported as "not visible to this account" rather
+# than as absent: the NetBox appliance learned that lesson the hard way, where
+# a non-root run told an operator a perfectly healthy appliance had never been
+# bootstrapped.
+set -uo pipefail
+
+CONFIG_DIR=/etc/diode
+PROJECT_DIR="${CONFIG_DIR}/compose"
+STATE=/var/lib/diode-appliance/state.json
+MARKER=/var/lib/diode-appliance/bootstrapped
+LOCK="${CONFIG_DIR}/images.lock"
+
+root=0
+[ "$(id -u)" -eq 0 ] && root=1
+
+line() { printf '  %-22s %s\n' "$1" "$2"; }
+
+echo "NetBox Diode appliance"
+
+if [ ! -e "${MARKER}" ] && [ "${root}" -eq 0 ]; then
+	line "bootstrap" "not visible to this account"
+elif [ -e "${MARKER}" ]; then
+	line "bootstrap" "complete"
+else
+	line "bootstrap" "NOT BOOTSTRAPPED"
+fi
+
+if [ "${root}" -eq 1 ] && [ -r "${STATE}" ]; then
+	line "served name" "$(jq -r '.fqdn // "<none>"' "${STATE}")"
+	line "discovery agent" "$(jq -r 'if .agent_enabled then "enabled" else "off" end' "${STATE}")"
+fi
+
+# Container state. --format json gives one object per service, which is what
+# makes "how many are up" answerable without parsing a table.
+if [ "${root}" -eq 1 ]; then
+	if services="$(docker compose --project-directory "${PROJECT_DIR}" ps --format json 2>/dev/null)"; then
+		total="$(printf '%s' "${services}" | jq -s 'length')"
+		running="$(printf '%s' "${services}" | jq -s '[.[] | select(.State == "running")] | length')"
+		line "containers" "${running}/${total} running"
+		printf '%s' "${services}" |
+			jq -rs '.[] | select(.State != "running") | "  !! \(.Service): \(.State) \(.Status)"'
+	else
+		line "containers" "docker compose did not answer"
+	fi
+else
+	line "containers" "not visible to this account"
+fi
+
+# Serving is a different question from "systemd started the units". Ask the
+# ingress the way a client would.
+code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/diode/auth/ 2>/dev/null)"
+case "${code}" in
+2* | 3* | 4*) line "serving" "yes (HTTP ${code} from the ingress)" ;;
+*) line "serving" "NO (last status: ${code:-none})" ;;
+esac
+
+if [ "${root}" -eq 1 ] && [ -r "${LOCK}" ]; then
+	line "images pinned" "$(grep -vc '^#' "${LOCK}") recorded in images.lock"
+fi
+
+# TODO(scaffold): report the Diode server version and the Diode NetBox plugin
+# version side by side, and warn when they do not pair. A plugin and server
+# that have drifted apart is the failure people actually hit after upgrading
+# one side, and it is invisible until an ingest silently stops reconciling.
+
+# TODO(scaffold): patch state - pending security updates, reboot-required, and
+# how long since the archive was last reached - exactly as netbox-status
+# reports it. The "LAST REACHED THE ARCHIVE 47 DAYS AGO" line is the one that
+# catches a site whose proxy nobody mentioned.
+
+if [ "${root}" -eq 1 ]; then
+	latest="$(find /srv/diode/backups -maxdepth 1 -name '*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
+	line "last backup" "${latest:-none}"
+fi

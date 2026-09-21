@@ -1,0 +1,19 @@
+#!/bin/bash
+# Restore a backup pair into this appliance. Confirm-prompted.
+#
+# TODO(scaffold): implement, following netbox-restore's order of operations -
+# and its refusals. The one that matters here: stop the stack, restore the
+# databases and /etc/diode TOGETHER, and refuse outright if the archive's
+# client-credentials.json does not match its .env. A half-restored appliance
+# whose OAuth2 clients no longer pair with its reconciler secret looks healthy
+# and silently reconciles nothing.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-restore: run as root" >&2
+	echo "  try: sudo diode-restore $*" >&2
+	exit 1
+fi
+
+echo "diode-restore: not implemented in this scaffold" >&2
+exit 1

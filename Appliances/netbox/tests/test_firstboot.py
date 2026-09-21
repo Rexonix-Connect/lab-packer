@@ -294,6 +294,10 @@ fb.resolve_identity = lambda props: ("netbox.example.com",
                                      ["netbox.example.com"], ["10.0.0.5"])
 fb.write_config = lambda config: None
 fb.write_nginx_snippets = lambda *a, **k: None
+# The proxy logic itself now lives in shared/appliance/proxy.py and is
+# covered by shared/tests/test_proxy.py, against a temporary tree. Here it
+# is stubbed only so reconcile() does not write to this machine's
+# /etc/environment.
 fb.write_proxy = lambda props: None
 fb.generate_certificate = lambda *a, **k: None
 fb.restart_services = lambda: None

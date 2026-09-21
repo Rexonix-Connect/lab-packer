@@ -1,0 +1,41 @@
+[Unit]
+Description=NetBox Discovery agent (orb-agent)
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+Requires=docker.service
+After=docker.service diode.service
+RequiresMountsFor=/srv/diode
+# Enabled only by diode-firstboot.py when agent.enabled was set on the deploy
+# form, or by `diode-agent enable`. An appliance deployed as a pure ingestion
+# server carries the image and never runs it.
+ConditionPathExists=/etc/diode/agent/agent.yaml
+
+[Service]
+Restart=on-failure
+RestartSec=30
+# --net=host because network discovery is nmap: SYN scans and ICMP host
+# discovery need raw sockets, and host networking is how the agent's own
+# documentation says to get them on Linux. It also means the agent publishes
+# nothing, so the loopback-only rule the rest of this appliance follows is not
+# weakened by running it.
+#
+# image.env carries the pinned agent image, written at build time.
+# credentials.env carries DIODE_CLIENT_ID and DIODE_CLIENT_SECRET, which
+# agent.yaml references rather than embedding; `diode-agent credentials`
+# writes it 0600. Neither file is optional: a missing one fails the unit
+# loudly, which is better than an agent that starts and authenticates as
+# nobody.
+EnvironmentFile=/etc/diode/agent/image.env
+EnvironmentFile=/etc/diode/agent/credentials.env
+ExecStartPre=-/usr/bin/docker rm -f diode-agent
+ExecStart=/usr/bin/docker run --rm --name diode-agent \
+    --net=host \
+    --log-driver local \
+    -v /etc/diode/agent:/opt/orb:ro \
+    -e DIODE_CLIENT_ID \
+    -e DIODE_CLIENT_SECRET \
+    ${ORB_AGENT_IMAGE} run -c /opt/orb/agent.yaml
+ExecStop=/usr/bin/docker stop --timeout 60 diode-agent
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

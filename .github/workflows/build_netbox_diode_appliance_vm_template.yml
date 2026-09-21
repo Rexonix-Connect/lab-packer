@@ -1,14 +1,16 @@
-
-name: Build NetBox Appliance VM Template
+name: Build NetBox Diode Appliance VM Template
 
 on:
   workflow_dispatch:
     inputs:
-      netbox_version:
-        description: NetBox release tag to install (for example v4.6.7)
+      diode_version:
+        description: Diode server release tag to run (for example v1.2.3) - must match what the vendored compose file was checked against
         type: string
-        required: false
-        default: v4.6.7
+        required: true
+      agent_version:
+        description: NetBox Discovery agent (orb-agent) release tag to bake in (for example v1.2.3)
+        type: string
+        required: true
       ssh_timeout:
         description: Packer SSH wait timeout (for example 45m or 1h)
         type: string
@@ -32,21 +34,24 @@ on:
         description: Memory in MB for the appliance template
         type: number
         required: false
-        default: 16384
+        default: 8192
       data_disk_gb:
-        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        description: Size in GB of the separate /srv/diode data disk (minimum 40)
         type: number
         required: false
-        default: 150
+        default: 100
 
   # Callable from the Rebuild All VM Templates orchestrator.
   workflow_call:
     inputs:
-      netbox_version:
-        description: NetBox release tag to install (for example v4.6.7)
+      diode_version:
+        description: Diode server release tag to run (for example v1.2.3)
         type: string
-        required: false
-        default: v4.6.7
+        required: true
+      agent_version:
+        description: NetBox Discovery agent (orb-agent) release tag to bake in
+        type: string
+        required: true
       ssh_timeout:
         description: Packer SSH wait timeout (for example 45m or 1h)
         type: string
@@ -66,12 +71,12 @@ on:
         description: Memory in MB for the appliance template
         type: number
         required: false
-        default: 16384
+        default: 8192
       data_disk_gb:
-        description: Size in GB of the separate /srv/netbox data disk (minimum 50)
+        description: Size in GB of the separate /srv/diode data disk (minimum 40)
         type: number
         required: false
-        default: 150
+        default: 100
 
 permissions:
   contents: read
@@ -100,11 +105,12 @@ jobs:
       # from an ISO, so it consumes that template's name rather than an ISO
       # path. Run the hardened build first if its library item is stale.
       PKR_VAR_sourceTemplateName: ${{ vars.UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME }}
-      PKR_VAR_templateName: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
-      PKR_VAR_netboxVersion: ${{ inputs.netbox_version }}
+      PKR_VAR_templateName: ${{ vars.NETBOX_DIODE_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_diodeVersion: ${{ inputs.diode_version }}
+      PKR_VAR_agentVersion: ${{ inputs.agent_version }}
       PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
       PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
-      PKR_VAR_vmName: "netbox-appliance-temp"
+      PKR_VAR_vmName: "netbox-diode-appliance-temp"
       PKR_VAR_vmFolder: "/"
       PKR_VAR_buildUsername: "pkrbuild"
       PACKER_LOG: 1
@@ -121,33 +127,34 @@ jobs:
       - name: Generate ephemeral build SSH key
         id: buildkey
         run: |
-          install -d -m 700 "${RUNNER_TEMP}/netbox-build"
-          rm -f "${RUNNER_TEMP}/netbox-build/id_ed25519" "${RUNNER_TEMP}/netbox-build/id_ed25519.pub"
-          ssh-keygen -q -t ed25519 -N '' -C packer-netbox-build -f "${RUNNER_TEMP}/netbox-build/id_ed25519"
+          install -d -m 700 "${RUNNER_TEMP}/diode-build"
+          rm -f "${RUNNER_TEMP}/diode-build/id_ed25519" "${RUNNER_TEMP}/diode-build/id_ed25519.pub"
+          ssh-keygen -q -t ed25519 -N '' -C packer-diode-build -f "${RUNNER_TEMP}/diode-build/id_ed25519"
           {
-            echo "public_key=$(cat "${RUNNER_TEMP}/netbox-build/id_ed25519.pub")"
-            echo "private_key_file=${RUNNER_TEMP}/netbox-build/id_ed25519"
+            echo "public_key=$(cat "${RUNNER_TEMP}/diode-build/id_ed25519.pub")"
+            echo "private_key_file=${RUNNER_TEMP}/diode-build/id_ed25519"
           } >> $GITHUB_OUTPUT
 
-      # netbox-firstboot.py is the appliance: it reads the deploy form, writes
-      # the configuration, issues the certificate and decides what to restart.
-      # None of that can be exercised on a template that has already been
-      # built, so its logic is checked here, before the build is worth
-      # spending. The checks need nothing but python3.
+      # diode-firstboot.py is the appliance: it reads the deploy form, renders
+      # the compose environment, generates every secret and issues the
+      # certificate. None of that can be exercised on a template that has
+      # already been built, and this build spends several gigabytes of image
+      # pulls before it gets there, so check the logic first. The checks need
+      # nothing but python3.
       - name: Check the appliance logic
         run: |
           # Shared by both appliances, so it runs in both builds.
           python3 shared/tests/test_proxy.py
-          python3 Appliances/netbox/tests/test_firstboot.py
+          python3 Appliances/netbox-diode/tests/test_firstboot.py
           # nullglob so an empty directory does not hand bash the pattern
           # itself, and an explicit count because the answer to "there are no
           # checks to run" is to fail the step that exists to run them, not to
           # pass quietly. This repository has been bitten by silently-skipped
           # checks more than once.
           shopt -s nullglob
-          checks=(Appliances/netbox/tests/*.sh)
+          checks=(Appliances/netbox-diode/tests/*.sh)
           if [ "${#checks[@]}" -eq 0 ]; then
-            echo "::error::No shell checks in Appliances/netbox/tests/" >&2
+            echo "::error::No shell checks in Appliances/netbox-diode/tests/" >&2
             exit 1
           fi
           for check in "${checks[@]}"; do
@@ -155,13 +162,13 @@ jobs:
             bash "${check}"
           done
 
-      # The descriptor table is shared with the five OS templates, and an
-      # extension that leaked into their form would only be noticed in a
-      # deploy wizard. Assert both shapes before spending a build.
+      # The descriptor table is shared with the OS templates and the NetBox
+      # appliance, and an extension that leaked into their form would only be
+      # noticed in a deploy wizard. Assert both shapes before spending a build.
       - name: Verify the shared deploy form
         run: |
           python3 - <<'PY'
-          import importlib.util, os, sys, types
+          import importlib.util, json, os, sys, types
 
           # pyVmomi is imported at module scope but unused for this check.
           for name in ('pyVim', 'pyVim.connect', 'pyVim.task', 'pyVmomi'):
@@ -186,23 +193,18 @@ jobs:
           ids = load()
           assert ids == BASE, 'OS templates would get a changed form: %s' % ids
 
-          os.environ['VAPP_EXTRA_DESCRIPTORS'] = 'shared/vapp-descriptors/netbox.json'
+          os.environ['VAPP_EXTRA_DESCRIPTORS'] = 'shared/vapp-descriptors/netbox-diode.json'
           ids = load()
-          # The expectation comes from netbox.json itself, not a hardcoded
-          # count: a count is one more copy of the same fact, and the copy is
-          # what rots - adding the proxy fields broke the previous `== 14`
-          # while every real invariant still held. What this must catch is a
-          # JSON entry that never reaches DESCRIPTORS, a reordering, or a
-          # foreign id - all of which the comparison below still does.
-          import json
-          with open('shared/vapp-descriptors/netbox.json') as handle:
+          # The expectation comes from the JSON itself, not a hardcoded count:
+          # a count is one more copy of the same fact, and the copy is what
+          # rots. What this must catch is an entry that never reaches
+          # DESCRIPTORS, a reordering, or a foreign id - all of which the
+          # comparison below still does.
+          with open('shared/vapp-descriptors/netbox-diode.json') as handle:
               expected = [d['id'] for d in json.load(handle)['descriptors']]
           extras = [i for i in ids if i not in BASE]
-          # On failure, print the two lists actually being compared: whether
-          # this is a missing id, a foreign one or ordering drift should be
-          # readable from the message, not re-derived from the composed form.
           assert extras == expected, (
-              'extras do not match netbox.json\n'
+              'extras do not match netbox-diode.json\n'
               '  composed: %s\n  expected: %s\n  full form: %s'
               % (extras, expected, ids))
           assert ids[-1] == 'user-data', ids
@@ -218,14 +220,14 @@ jobs:
       - name: Packer fmt
         run: |
           packer fmt -check ./shared/config.pkr.hcl
-          packer fmt -check ./Appliances/netbox
+          packer fmt -check ./Appliances/netbox-diode
 
       - name: Packer validate
         env:
           PKR_VAR_buildPublicKey: ${{ steps.buildkey.outputs.public_key }}
           PKR_VAR_buildPrivateKeyFile: ${{ steps.buildkey.outputs.private_key_file }}
         run: |
-          cd Appliances/netbox
+          cd Appliances/netbox-diode
           packer validate -only='vsphere-clone.base' .
 
       - name: Packer build
@@ -233,7 +235,7 @@ jobs:
           PKR_VAR_buildPublicKey: ${{ steps.buildkey.outputs.public_key }}
           PKR_VAR_buildPrivateKeyFile: ${{ steps.buildkey.outputs.private_key_file }}
         run: |
-          cd Appliances/netbox
+          cd Appliances/netbox-diode
           packer build -timestamp-ui -force -only='vsphere-clone.base' .
 
       # The vCenter OVF export scrambles vApp property order and the deploy
@@ -246,18 +248,18 @@ jobs:
           VCENTER_PASSWORD: ${{ secrets.VCENTER_PASS }}
           VCENTER_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
           LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
-          TEMPLATE_NAME: ${{ vars.NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME }}
-          # The appliance's deploy form carries NetBox properties on top of the
+          TEMPLATE_NAME: ${{ vars.NETBOX_DIODE_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+          # The appliance's deploy form carries Diode properties on top of the
           # eleven every template has. Without this the normalizer would not
           # recognize them and would sort them into an "Other" category. The
           # path is relative to the repository root, which is this step's
           # working directory; the pre-export descriptor step sets its own
           # value, relative to the Packer build directory.
-          VAPP_EXTRA_DESCRIPTORS: shared/vapp-descriptors/netbox.json
+          VAPP_EXTRA_DESCRIPTORS: shared/vapp-descriptors/netbox-diode.json
         run: |
           python3 shared/scripts/normalize-library-ovf.py
 
       - name: Remove the ephemeral build SSH key
         if: always()
         run: |
-          rm -rf "${RUNNER_TEMP}/netbox-build"
+          rm -rf "${RUNNER_TEMP}/diode-build"

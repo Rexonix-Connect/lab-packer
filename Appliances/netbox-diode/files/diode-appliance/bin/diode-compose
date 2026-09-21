@@ -1,0 +1,19 @@
+#!/bin/bash
+# docker compose, pinned to the appliance's project directory and environment.
+#
+# The point is not convenience. `docker compose` run from the wrong directory
+# silently uses a different project name and a different .env, which on this
+# appliance means a second, empty stack alongside the real one. Every other
+# tool here goes through this wrapper for that reason, and an operator should
+# too.
+set -euo pipefail
+
+PROJECT_DIR=/etc/diode/compose
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-compose: run as root (reads /etc/diode, which is 0750)" >&2
+	echo "  try: sudo diode-compose $*" >&2
+	exit 1
+fi
+
+exec docker compose --project-directory "${PROJECT_DIR}" "$@"

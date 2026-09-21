@@ -1,0 +1,27 @@
+#!/bin/bash
+# Move the appliance to another Diode release.
+#
+#   diode-upgrade vX.Y.Z              pull from the registry
+#   diode-upgrade --from-bundle FILE  docker load from a tarball (air-gapped)
+#
+# TODO(scaffold): implement. The shape:
+#   1. diode-backup first - the reconciler applies schema migrations on start
+#      and they are not reversible.
+#   2. Re-vendor check: refuse if docker-compose.yaml has not been re-vendored
+#      for the target release. Upstream adds environment variables between
+#      releases, and a variable the compose file references but env.template
+#      does not set makes the container start with it empty - which is how you
+#      get a stack that comes up and does nothing.
+#   3. Rewrite DIODE_TAG in .env, pull (or load), `up --wait`.
+#   4. Health-check, and roll back to the digests in images.lock if it fails.
+#   5. Rewrite images.lock, and print the rollback command either way.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-upgrade: run as root" >&2
+	echo "  try: sudo diode-upgrade $*" >&2
+	exit 1
+fi
+
+echo "diode-upgrade: not implemented in this scaffold" >&2
+exit 1
