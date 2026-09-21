@@ -1,0 +1,17 @@
+# Host-side logs only. Container logs are rotated by Docker itself - the
+# local log driver with max-size/max-file in /etc/docker/daemon.json - because
+# logrotate cannot safely truncate a file the container runtime is writing
+# through its own logging driver.
+/var/log/nginx/diode-*.log {
+	weekly
+	rotate 8
+	compress
+	delaycompress
+	missingok
+	notifempty
+	su root adm
+	sharedscripts
+	postrotate
+		[ -f /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)"
+	endscript
+}

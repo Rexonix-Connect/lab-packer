@@ -1,0 +1,23 @@
+#!/bin/bash
+# One reviewable tarball in /var/tmp for a site nobody outside can reach.
+#
+# TODO(scaffold): implement, following netbox-support-bundle. The contents:
+# diode-status, image digests from images.lock, unit state, `docker compose
+# ps`, per-container logs, cloud-init, storage, listeners and the nginx log.
+#
+# What must NOT be in it, and what the tool has to SAY is not in it - because
+# stating that plainly is usually what a customer wants to know before they
+# send it anywhere: /etc/diode/compose/.env, client-credentials.json,
+# agent/credentials.env, the TLS private key and /root/diode-credentials.txt.
+# .env is included only with every value after the first "=" redacted, since
+# which variables are SET is diagnostic and their values never are.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-support-bundle: run as root (reads unit state and logs)" >&2
+	echo "  try: sudo diode-support-bundle $*" >&2
+	exit 1
+fi
+
+echo "diode-support-bundle: not implemented in this scaffold" >&2
+exit 1

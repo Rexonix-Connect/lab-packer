@@ -1,0 +1,51 @@
+# NetBox Discovery agent configuration for the appliance.
+#
+# diode-firstboot.py renders this to /etc/diode/agent/agent.yaml when
+# agent.enabled is set on the deploy form, substituting the targets from
+# agent.targets. `diode-agent policy add` merges extra policy files from
+# policies.d/ into the rendered file.
+#
+# Credentials are NOT here on purpose. ${DIODE_CLIENT_ID} and
+# ${DIODE_CLIENT_SECRET} are read from the process environment, which
+# diode-agent.service loads from credentials.env (mode 0600). A vApp property
+# is stored in the VM configuration in cleartext and is readable by any
+# vCenter user who can see the VM - which is an acceptable risk for one admin
+# password and not for a customer's device credentials.
+orb:
+  config_manager:
+    active: local
+
+  backends:
+    network_discovery:
+    common:
+      diode:
+        # The agent talks to the Diode ingress on this same appliance, over
+        # loopback: it does not need to go out to 443 and back in through
+        # nginx to reach a service on its own host.
+        target: grpc://127.0.0.1:8080/diode
+        client_id: ${DIODE_CLIENT_ID}
+        client_secret: ${DIODE_CLIENT_SECRET}
+        agent_name: __AGENT_NAME__
+
+  policies:
+    network_discovery:
+      appliance_default:
+        config:
+          # Hourly. A discovery run is an nmap sweep of the customer's
+          # network; the every-minute schedule in upstream's example is for
+          # watching it work, not for leaving running.
+          schedule: "0 * * * *"
+          timeout: 5
+          defaults:
+            description: Discovered by the NetBox Diode appliance
+            tags: [net-discovery, orb-agent]
+        scope:
+          targets:
+__AGENT_TARGETS__
+          # A bare target list means `nmap -sS -p1-1000 --open -T3`, which is
+          # a SYN scan of a thousand ports against every host. On a customer
+          # network that is both slow and conspicuous. Ping scan first; widen
+          # deliberately, with a policy in policies.d/, once someone has
+          # agreed to it.
+          ping_scan: true
+          max_retries: 0

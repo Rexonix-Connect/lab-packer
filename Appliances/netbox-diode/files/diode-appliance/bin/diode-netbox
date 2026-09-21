@@ -1,0 +1,27 @@
+#!/bin/bash
+# Point this appliance at a NetBox, after deployment.
+#
+#   diode-netbox show
+#   diode-netbox set https://netbox.example.com [--ca FILE] [--insecure]
+#
+# The deploy form's diode.netbox-url is first-boot only, and there is no
+# second first boot - the same rule the TLS fields follow. This is the day-two
+# path: a NetBox that moved, a NetBox that was not ready when the appliance
+# was deployed, or a certificate that changed.
+#
+# TODO(scaffold): implement. Rewrite NETBOX_DIODE_PLUGIN_API_BASE_URL,
+# SSL_CERT_FILE and NETBOX_DIODE_PLUGIN_SKIP_TLS_VERIFY in
+# /etc/diode/compose/.env, install the CA to /etc/diode/netbox-ca.pem,
+# recreate diode-reconciler and verify it can reach the plugin API before
+# reporting success. Normalizing the URL is shared with diode-firstboot.py's
+# netbox_plugin_url(); factor it out rather than writing it twice.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-netbox: run as root (rewrites /etc/diode/compose/.env)" >&2
+	echo "  try: sudo diode-netbox $*" >&2
+	exit 1
+fi
+
+echo "diode-netbox: not implemented in this scaffold" >&2
+exit 1

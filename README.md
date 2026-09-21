@@ -316,6 +316,44 @@ The filesystem is ext4 made on the **whole device, with no partition table**, an
 
 Requirements: the same vCenter variables and secrets as the other builds, plus `NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the **source** it clones. No ISO path, no `PACKER_VM_PASSWORD` and no `RECOVERY_PASSWORD` are needed — this build introduces no new secrets.
 
+### Build NetBox Diode Appliance VM Template
+
+A [Diode](https://github.com/netboxlabs/diode) ingestion appliance (`Appliances/netbox-diode/`): the Diode server's nine containers behind host nginx on one guest, with the [NetBox Discovery agent](https://github.com/netboxlabs/orb-agent) baked in and switched off. It is a **sibling of the NetBox appliance, not a replacement for it** — it reconciles into a NetBox, and that NetBox needs the Diode NetBox plugin installed (`netbox-plugin install netboxlabs-diode-netbox-plugin` on the NetBox appliance).
+
+Why a second image rather than adding Diode to the NetBox appliance: Diode brings **its own PostgreSQL 16, its own Redis and Ory Hydra**, all as containers, onto a guest that already runs PostgreSQL and Redis with deliberately chosen settings. It needs a container runtime, whose firewall rules sit ahead of `ufw`'s chains. Its backup and upgrade cycles are its own. And the discovery agents have to sit near the devices they scan, which for a multi-site customer is neither VM. Splitting them keeps `netbox-backup`/`netbox-restore` a complete contract and keeps one product's upgrade from being two.
+
+Like the NetBox appliance, it clones the **published hardened 24.04 library item** with `vsphere-clone`, so Secure Boot and kernel lockdown, the known-CVE module blocks, the sysctl baseline, auditd, the SSH crypto policy, unattended-upgrades, the `recovery` break-glass account and the deploy form are inherited rather than reimplemented. **The hardened template must exist in the content library first.**
+
+What is **baked into the template**: Docker Engine, host nginx, the vendored compose project, and every container image pulled onto the data disk — so a deployment never needs a registry, which is the only way an air-gapped site works at all. What is **generated per deployment**, on first boot: every database and Redis password, the Hydra system secret, the three OAuth2 client secrets, the TLS certificate, and the agent configuration if it was asked for.
+
+That last point is worth stating plainly, because it is harder to hold here than on the NetBox appliance. That image has no database password at all — its local PostgreSQL authenticates by peer over a Unix socket. Diode's services reach PostgreSQL, Redis and Hydra over TCP inside a container network, so passwords genuinely exist. What the design guarantees instead is that **every one of them is born on first boot** and none is in the template; `finalize.sh` asserts it, and refuses to export an image where any secret file or container volume survived.
+
+**Nothing in the compose project publishes a port on a non-loopback address.** Host nginx terminates TLS on 443 and proxies to `127.0.0.1:8080`. This is not tidiness: Docker inserts its own firewall rules ahead of `ufw`'s chains, so a port published on `0.0.0.0` is reachable whatever `ufw` says, and nothing else in the image would notice. Binding to loopback sidesteps the question rather than trying to make two firewall tools agree, and `verify.sh` fails the build if anything but 22, 80 and 443 is listening off loopback.
+
+The build refuses to produce a template that does not work: `verify.sh` starts the whole stack, requires every long-running container to be up and the ingress to answer through nginx over HTTPS, requires plain HTTP to redirect, requires every image to carry a recorded repository digest, requires the agent to be present but disabled, and re-asserts the entire hardened baseline (module blocks, sysctls, `/dev/shm`, auditd, `recovery`) *after* Docker and the Diode stack were installed on top.
+
+#### Workflow inputs
+
+- `diode_version` — Diode server release tag, **required, no default**. There is deliberately no default: upstream's compose file defaults its own tag to `latest`, which is the one thing an appliance must never ship, and a plausible-looking pin invented here would be worse than making the build ask. It must match the release the vendored compose file was checked against.
+- `agent_version` — orb-agent release tag to bake in, **required, no default**. Pinned separately because the two projects release independently.
+- `ssh_timeout` — Packer SSH wait timeout; defaults to `45m`
+- `firmware` — re-asserted on the clone so Secure Boot survives the export; **must match the firmware the hardened template was built with**
+- `cpu_count` / `memory_mb` — appliance sizing; default to `4` vCPU and `8192` MB. Lower than the NetBox appliance's 16 GB: nine light containers plus the optional agent, rather than gunicorn and a growing database
+- `data_disk_gb` — size of the separate `/srv/diode` data disk, minimum `40`; defaults to `100`
+
+#### Disk layout
+
+| Mount | Size | Contents |
+| --- | --- | --- |
+| `/` | 60 GB (inherited) | The hardened base operating system |
+| `/srv/diode` | `data_disk_gb`, thin | Docker's `data-root` — the baked images **and** every named volume, so the Diode PostgreSQL cluster and the Redis append-only file land here — plus `/srv/diode/backups` |
+
+Docker's data root is moved to `/srv/diode/docker` **before any image is pulled**, and `docker.service` gets a `RequiresMountsFor=/srv/diode` drop-in. That drop-in matters more than it looks: a Docker that started on an empty data root would recreate empty volumes, and the stack would come up looking healthy while holding nothing.
+
+The disk is attached the same way the NetBox appliance's is, and for the same reason — `packer-plugin-vsphere` rejects a `storage` block outright for an OVF-backed content library item — so `shared/scripts/add-vm-disk.py` hot-adds it at SCSI 0:1. Same ext4-on-whole-device layout, same `nofail,nodev,nosuid` mount by UUID, same one-`resize2fs` growth path via `diode-datadisk.service`.
+
+Requirements: the same vCenter variables and secrets as the other builds, plus `NETBOX_DIODE_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the **source** it clones. This build introduces no new secrets.
+
 ## Deploying the templates
 
 ### vApp deploy form (vSphere)
@@ -560,3 +598,84 @@ Everything the hardened base does is left in place. Two things it does are relev
 `netbox.service` and `netbox-rq.service` additionally get `NoNewPrivileges`, `ProtectSystem=full`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`, `RestrictSUIDSGID`, `RestrictRealtime` and `LockPersonality`. `ProtectSystem=strict`, `ProtectHome` and `MemoryDenyWriteExecute` are deliberately **not** set: NetBox runs operator-supplied custom scripts and reports, and those settings break them (and CPython extensions) in ways that only surface in production. The build asserts the drop-ins are actually in effect.
 
 One thing to be aware of: `unattended-upgrades` keeps PostgreSQL, Redis and nginx patched, but it does **not** cover the Python packages inside `/opt/netbox/venv`. `netbox-upgrade` is the mechanism for those.
+
+## NetBox Diode appliance operations
+
+> **Status: scaffold.** `Appliances/netbox-diode/` currently carries the complete Packer build, the deploy form, the vendored compose project, the first-boot bootstrap and the build-time checks. The day-two CLIs other than `diode-status`, `diode-compose` and `diode-credentials` are stubs that refuse with "not implemented in this scaffold" and carry a `TODO(scaffold):` note describing what they have to do. Nothing here has been run against a real vCenter yet.
+
+### What this appliance is, and what it is not
+
+Diode is a **pipeline, not a system of record**. Data arrives from a discovery agent or an SDK, is reconciled, and ends up in NetBox — which has its own backups. Losing this appliance costs you the queue and its configuration, not your inventory. Say that to anyone treating it as the only copy of something.
+
+It reconciles into exactly one NetBox, which must have the Diode NetBox plugin installed. **Deploy the NetBox appliance first.**
+
+### First boot
+
+Every secret is generated here: the Redis password, three PostgreSQL passwords, the Hydra system secret, and the three OAuth2 clients (`diode-ingest` for agents and SDKs, `diode-to-netbox` for the reconciler, `netbox-to-diode` for the plugin's callback). The ingest client secret is written to `/root/diode-credentials.txt` (mode 600) and echoed on the **local console** through `/etc/issue.d/60-diode.issue`, never to `/etc/issue.net` — which the hardened base uses as the pre-authentication SSH banner.
+
+Clear it once the values are stored somewhere findable:
+
+```
+sudo diode-credentials --clear
+```
+
+Unlike a password, an OAuth2 client secret cannot simply be reset: re-issuing the client means reconfiguring everything that authenticates with it.
+
+### Pointing it at a NetBox
+
+`diode.netbox-url` on the deploy form. Leaving it empty is supported — the appliance still starts and still accepts ingest, and `diode-netbox set` points it at a NetBox later. That is deliberate: a VM that refuses to boot because one form field was blank is a worse first-boot outcome than one that comes up and waits.
+
+**The NetBox appliance in this repository ships a self-signed certificate by default**, which the reconciler will not trust. Supply its CA on `diode.netbox-ca` (base64 PEM), which is mounted into the reconciler and pointed at by `SSL_CERT_FILE`. `diode.netbox-insecure` disables verification entirely and is a last resort, not a shortcut.
+
+### The discovery agent
+
+Off unless `agent.enabled` is set. On-box is the **single-site convenience**, not the recommendation: an agent has to reach the devices it scans, so a multi-site network wants agents out at each site, pointed at this appliance's ingest endpoint with the `diode-ingest` credentials.
+
+**Device credentials are deliberately not on the deploy form.** A vApp property is stored in the VM configuration in cleartext, readable by any vCenter user who can see the VM — which the form says of its own password fields. One admin password is an acceptable risk there; SNMP communities and SSH keys for a customer's whole estate are not. They go in afterwards:
+
+```
+sudo diode-agent credentials
+sudo diode-agent policy add /etc/diode/agent/policies.d/core-switches.yaml
+sudo diode-agent policy test /etc/diode/agent/policies.d/core-switches.yaml
+```
+
+`policy test` exists for a specific reason: a discovery policy is an nmap sweep of somebody's production network, and running one to find out what it does is not a reasonable way to find out what it does. It dry-runs the policy and prints the entities it *would* ingest.
+
+The shipped default policy is a **ping scan**, not the port sweep a bare target list gives you — `nmap <targets>` means `-sS -p1-1000` against every host, which on a production network is both slow and conspicuous. Widen it deliberately, with a policy in `policies.d/`, once someone has agreed to it.
+
+### Upgrades
+
+`diode-upgrade vX.Y.Z` pulls, recreates and health-checks, rolling back to the digests in `/etc/diode/images.lock` if the new release does not come up. `diode-upgrade --from-bundle FILE` does the same from a `docker save` tarball, for a site with no registry access.
+
+One thing the tool has to check, and the reason it is not just `docker compose pull`: **`docker-compose.yaml` is vendored, not downloaded.** Upstream adds environment variables between releases, and a variable the compose file references but `env.template` does not set makes the container start with it *empty* — which is how you get a stack that comes up and silently does nothing. Re-vendor both files together, read the diff, and let `tests/test_firstboot.py` check that every compose variable is still set.
+
+**A Diode server and its NetBox plugin must pair.** Upgrading one side and not the other is the failure people actually hit, and it is invisible until an ingest stops reconciling.
+
+### Day-two commands
+
+All in `/usr/local/sbin`. `diode-status` is safe to run as any account — it drives the MOTD, and reports what it cannot see as *not visible to this account* rather than as absent. Every other one requires root and says so up front rather than half-working.
+
+| Command | Purpose |
+| --- | --- |
+| `diode-status` | Bootstrap state, served name, container health, whether the ingress **actually answers** through nginx, image pins, agent state, last backup |
+| `diode-compose` | `docker compose` pinned to `/etc/diode/compose`. Run from the wrong directory it would silently use a different project name and a different `.env` — which on this appliance means a second, empty stack beside the real one |
+| `diode-agent` | `status`, `enable`/`disable`, `credentials`, `policy list/add/test` |
+| `diode-netbox` | `show` / `set` the NetBox this appliance reconciles into, including its CA. The deploy form's value is first-boot only |
+| `diode-backup` | The Diode and Hydra databases, the Redis snapshot, and `/etc/diode` — which is the part that cannot be regenerated. Nightly via `diode-backup.timer`; `RETENTION_DAYS` in `/etc/default/diode-backup`, default 14 |
+| `diode-restore` | Restores a backup set. Refuses if the archive's client credentials do not match its `.env`: a half-restored appliance whose OAuth2 clients no longer pair looks healthy and reconciles nothing |
+| `diode-upgrade` | As above |
+| `diode-tls` | `show` what certificate is installed; `install` a real, wildcard or renewed one |
+| `diode-credentials` | Print or `--clear` the generated OAuth2 secrets and the console banner |
+| `diode-support-bundle` | One redacted tarball for a site nobody outside can reach. `.env` is included with every value redacted — which variables are *set* is diagnostic, their values never are |
+
+Backups contain every secret the appliance holds, so `/srv/diode/backups` is `0700 root` and the archives are `0600`. They live on the same disk as the data they protect: a convenience, not an off-box backup strategy.
+
+### Interaction with the hardened baseline
+
+Everything the hardened base does is left in place. Three things are worth knowing:
+
+- `ufw` defaults to deny-incoming, so the build opens 80/tcp and 443/tcp — and nothing else needs a rule, because nothing else is reachable. The Diode ingress, Hydra, PostgreSQL, Redis and the node exporter are all on loopback.
+- **Docker's firewall rules sit ahead of `ufw`'s chains.** This is the single most important fact about running containers on a `ufw`-managed host, and the reason the whole appliance publishes to `127.0.0.1` only. `verify.sh` fails the build if anything but 22, 80 and 443 listens off loopback.
+- fail2ban runs one jail, `sshd`, and that is the honest answer here. There is deliberately no jail on the ingestion endpoint: a failed OAuth2 client-credentials exchange is not a password guess against a human account — the clients are machine identities with generated 24-byte secrets — and banning on it would mostly ban an agent whose credentials were rotated.
+
+The Docker daemon runs with `no-new-privileges` and the `local` log driver capped at 3 × 20 MB per container, so container logs cannot fill the data disk. Host logs are rotated by logrotate; container logs deliberately are not, because logrotate cannot safely truncate a file the runtime writes through its own logging driver.

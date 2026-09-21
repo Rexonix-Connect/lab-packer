@@ -1,0 +1,10 @@
+[Unit]
+Description=NetBox Diode appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+After=diode.service
+RequiresMountsFor=/srv/diode
+ConditionPathExists=/var/lib/diode-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/diode-backup

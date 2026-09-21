@@ -1,0 +1,89 @@
+{
+  "insert_before": "user-data",
+  "descriptors": [
+    {
+      "id": "diode.fqdn",
+      "category": "Diode Server",
+      "label": "Public FQDN",
+      "description": "Fully qualified name this appliance is reached by; used for the TLS certificate and printed as the ingestion endpoint. Empty derives it from the guest hostname and the addresses held at first boot",
+      "type": "string"
+    },
+    {
+      "id": "diode.time-zone",
+      "category": "Diode Server",
+      "label": "Time Zone",
+      "description": "IANA time zone for the host's logs, for example Europe/Prague; empty means UTC. The containers keep their own clocks in UTC either way",
+      "type": "string"
+    },
+    {
+      "id": "diode.metrics-allow",
+      "category": "Diode Server",
+      "label": "Metrics Allowlist",
+      "description": "Space or comma separated addresses/CIDRs allowed to scrape /node-metrics; empty leaves node-exporter switched off",
+      "type": "string"
+    },
+    {
+      "id": "diode.netbox-url",
+      "category": "Diode NetBox Target",
+      "label": "NetBox URL",
+      "description": "The NetBox this appliance reconciles into, for example https://netbox.example.com. That NetBox must have the Diode NetBox plugin installed. Empty is allowed: the appliance still starts and accepts ingest, and can be pointed at a NetBox later with diode-netbox",
+      "type": "string"
+    },
+    {
+      "id": "diode.netbox-ca",
+      "category": "Diode NetBox Target",
+      "label": "NetBox CA Bundle (base64 PEM)",
+      "description": "Base64-encoded PEM certificate authority bundle used to verify the NetBox connection. Needed in practice when NetBox uses a private or self-signed certificate - which the NetBox appliance in this repository ships by default. Empty uses the system trust store",
+      "type": "string"
+    },
+    {
+      "id": "diode.netbox-insecure",
+      "category": "Diode NetBox Target",
+      "label": "Skip NetBox TLS Verification",
+      "description": "Last resort only: disables certificate verification for the NetBox connection entirely. Supply a CA bundle above instead wherever possible",
+      "type": "boolean"
+    },
+    {
+      "id": "diode.proxy",
+      "category": "Diode Network",
+      "label": "HTTP(S) Proxy",
+      "description": "Proxy for the appliance's own outbound traffic, for example http://proxy.example.com:3128. Needed for Ubuntu security updates and for pulling a new Diode release on a network without direct internet access. Empty means connect directly",
+      "type": "string"
+    },
+    {
+      "id": "diode.no-proxy",
+      "category": "Diode Network",
+      "label": "Proxy Bypass List",
+      "description": "Comma-separated hosts, domains and CIDRs reached without the proxy, for example .internal.example.com,10.0.0.0/8. localhost and the appliance's own addresses are always bypassed",
+      "type": "string"
+    },
+    {
+      "id": "diode.tls-cert",
+      "category": "Diode TLS",
+      "label": "TLS Certificate Chain (base64 PEM)",
+      "description": "Base64-encoded PEM certificate chain for nginx; empty generates a self-signed certificate. HSTS is only sent when a certificate is supplied here, because HSTS makes a self-signed warning impossible to click through",
+      "type": "string"
+    },
+    {
+      "id": "diode.tls-key",
+      "category": "Diode TLS",
+      "label": "TLS Private Key (base64 PEM)",
+      "description": "Base64-encoded PEM private key matching the certificate above; required only when a certificate is supplied",
+      "type": "string"
+    },
+    {
+      "id": "agent.enabled",
+      "category": "Discovery Agent",
+      "label": "Run Discovery Agent On This Appliance",
+      "description": "Runs the NetBox Discovery agent on this VM. Suitable for a single site: the agent has to reach the devices it scans, so a multi-site network wants agents out at each site pointed at this appliance instead. Off by default",
+      "type": "boolean"
+    },
+    {
+      "id": "agent.targets",
+      "category": "Discovery Agent",
+      "label": "Discovery Targets",
+      "description": "Space or comma separated addresses, ranges or CIDRs the agent scans hourly, for example 192.0.2.0/24. Required when the agent is enabled. Device credentials are deliberately NOT collected here - a value entered on this form is stored in the VM configuration in cleartext; set them afterwards with: sudo diode-agent credentials",
+      "type": "string"
+    }
+  ]
+}

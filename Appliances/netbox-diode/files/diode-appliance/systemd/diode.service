@@ -1,0 +1,24 @@
+[Unit]
+Description=Diode server (compose project)
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# A thin systemd front end for `docker compose up`, so the stack is a unit an
+# operator can start, stop and read the state of like anything else on the
+# appliance - and so it has an ordering relationship with the bootstrap and
+# the data disk that a bare restart policy could not express.
+Requires=docker.service
+After=docker.service
+RequiresMountsFor=/srv/diode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/diode/compose
+# --wait blocks until every container with a health check is healthy, so a
+# stack that comes up broken fails the unit instead of reporting success and
+# leaving the failure to be discovered by the first ingest.
+ExecStart=/usr/bin/docker compose up --detach --wait --wait-timeout 300
+ExecStop=/usr/bin/docker compose stop --timeout 60
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

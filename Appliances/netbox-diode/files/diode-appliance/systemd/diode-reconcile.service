@@ -1,0 +1,24 @@
+[Unit]
+Description=NetBox Diode appliance address and certificate reconciliation
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Runs on every boot after the appliance has been bootstrapped. The hardened
+# base re-applies the deploy form's network settings on every boot, so an
+# address or host name can change under a running appliance; this keeps the
+# served name, a self-signed certificate and the outbound proxy in step with
+# it. Secrets, the databases and the OAuth2 clients are never touched.
+# Ordering, and the reason cloud-final.service is deliberately absent from it,
+# is explained in diode-bootstrap.service - the same constraint applies here.
+After=ovf-settings.service network-online.target docker.service
+Wants=network-online.target
+RequiresMountsFor=/srv/diode
+Before=diode.service nginx.service
+ConditionPathExists=/var/lib/diode-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/diode-firstboot.py --reconcile
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

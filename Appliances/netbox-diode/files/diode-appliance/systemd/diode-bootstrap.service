@@ -1,0 +1,33 @@
+[Unit]
+Description=NetBox Diode appliance first-boot bootstrap
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# ovf-settings.service (from the hardened base) applies the deploy form's
+# network and identity before networking starts, and cloud-init sets the host
+# name and creates users in its init stage, which completes before
+# network-online.target - so by this point the guest knows who it is.
+#
+# Never order this unit after a cloud-init unit that runs late in boot,
+# cloud-final.service in particular. This unit is pulled into
+# multi-user.target, cloud-final.service is ordered after multi-user.target,
+# and the resulting cycle is not an error systemd reports as a failure: it
+# breaks it by DELETING jobs. On the NetBox appliance it deleted the bootstrap
+# (so nothing that Requires= it started) and cloud-final's own job (so the
+# deploy form was never applied). The appliance booted in thirteen seconds and
+# served nothing, logging nothing against any unit. Do not reintroduce it.
+After=ovf-settings.service network-online.target docker.service
+Wants=network-online.target
+# The container images and every volume live here.
+RequiresMountsFor=/srv/diode
+Before=diode.service nginx.service
+ConditionPathExists=!/var/lib/diode-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/diode-firstboot.py
+# The Hydra migration and the reconciler's own schema migration both run on
+# the first start, against a database that is being created as they wait.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

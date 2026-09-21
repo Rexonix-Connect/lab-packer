@@ -1,0 +1,23 @@
+#cloud-config
+# NoCloud seed used only while this appliance is being built.
+#
+# The hardened base image deletes its own provisioning account, disables SSH
+# password authentication and removes its host keys, so a clone of it has
+# nothing Packer can log into. This creates a throwaway, key-only account for
+# the duration of the build; files/finalize.sh deletes it, and the CD this
+# came from is detached (remove_cdrom), before the template is exported.
+#
+# Listing users without "default" deliberately suppresses the stock `ubuntu`
+# account: at deploy time the operator's account is created from the vApp
+# deploy form instead, by the base image's ovf-settings.py.
+users:
+  - name: ${build_username}
+    gecos: Packer build account
+    shell: /bin/bash
+    groups: [sudo]
+    lock_passwd: true
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      - "${build_public_key}"
+
+disable_root: true

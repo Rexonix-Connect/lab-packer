@@ -1,0 +1,30 @@
+#!/bin/bash
+# Back up everything this appliance generated, into /srv/diode/backups.
+#
+# Worth being clear about what this is FOR, because it is not what
+# netbox-backup is for. Diode is a pipeline, not a system of record: the data
+# that matters ends up in NetBox, which has its own backups. What is here is
+# configuration and identity - the rendered environment, the OAuth2 client
+# secrets, the agent's policies - plus the ingestion state that would
+# otherwise be replayed or lost. Losing this appliance costs you a redeploy,
+# not your inventory. Say so to anyone treating it as the only copy.
+#
+# TODO(scaffold): implement. The shape, following netbox-backup:
+#   1. pg_dump -Fc of the diode and hydra databases, through
+#      `diode-compose exec -T postgres pg_dump`, into one timestamped pair.
+#   2. Redis: BGSAVE, then copy the appendonly/dump file out of the volume.
+#   3. A tarball of /etc/diode - .env, client-credentials.json, images.lock,
+#      netbox-ca.pem, agent/ - which is the part that cannot be regenerated.
+#   4. Prune by RETENTION_DAYS from /etc/default/diode-backup, default 14.
+# Archives are 0600 in a 0700 directory: they contain every secret the
+# appliance holds.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-backup: run as root (reads /etc/diode and writes /srv/diode/backups)" >&2
+	echo "  try: sudo diode-backup $*" >&2
+	exit 1
+fi
+
+echo "diode-backup: not implemented in this scaffold" >&2
+exit 1

@@ -1,0 +1,27 @@
+Discovery policies added after deployment.
+
+The agent takes a single agent.yaml. `diode-agent policy add <file>` merges a
+policy file from this directory into the rendered /etc/diode/agent/agent.yaml
+and restarts the agent; `diode-agent policy test <file>` runs it once and
+prints what it would ingest without sending anything.
+
+Each file here is the `policies:` fragment for one backend, for example:
+
+    device_discovery:
+      core_switches:
+        config:
+          schedule: "0 2 * * *"
+        scope:
+          - hostname: 192.0.2.10
+            username: ${SWITCH_USERNAME}
+            password: ${SWITCH_PASSWORD}
+            driver: ios
+
+Credentials are ${VARIABLE} references, resolved from
+/etc/diode/agent/credentials.env (mode 0600). Do not write a secret into a
+file in this directory: it is captured by diode-backup and shown by
+diode-support-bundle.
+
+Backends: network_discovery (nmap sweeps), device_discovery (driver-based
+polling), snmp_discovery, gnmi_discovery, worker. See the orb-agent
+documentation for each backend's policy schema.

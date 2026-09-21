@@ -1,0 +1,29 @@
+# fail2ban for the NetBox Diode appliance.
+#
+# One jail only, and that is the honest answer for this image: SSH.
+#
+# There is deliberately no jail on the ingestion endpoint. Diode's own ingress
+# rejects an unauthenticated gRPC call through an auth_request subrequest
+# against diode-auth, and a failed OAuth2 client-credentials exchange is not a
+# password guess against a human account - the clients are machine identities
+# with generated 24-byte secrets. Banning on it would mostly ban an agent
+# whose clock drifted or whose credentials were rotated, which is a support
+# call, not a defence.
+
+[DEFAULT]
+# ufw owns the firewall in this image. fail2ban's default iptables actions
+# would insert rules alongside ufw's own chains, where their precedence
+# depends on ordering that neither tool coordinates.
+#
+# Note this is also why nothing in the compose project publishes to a
+# non-loopback address: Docker's own rules sit ahead of both.
+banaction = ufw
+banaction_allports = ufw
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+# Ubuntu 24.04 has no rsyslog by default, so sshd only logs to the journal.
+backend = systemd

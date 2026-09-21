@@ -1,0 +1,29 @@
+#!/bin/bash
+# The appliance's TLS certificate.
+#
+#   diode-tls show
+#   diode-tls install CERT KEY
+#
+# The deploy form's TLS fields are first-boot only, so this is the day-two
+# path for a real, wildcard or renewed certificate.
+#
+# TODO(scaffold): port Appliances/netbox/files/netbox-appliance/bin/netbox-tls
+# rather than writing a second one. Its refusals are all earned and all apply
+# here unchanged: a pair that does not match, an already-expired certificate,
+# and a file whose FIRST certificate is not the leaf (nginx serves the file as
+# given, so a chain in the wrong order works only in browsers that happen to
+# have the intermediate cached).
+#
+# The one thing that differs: removing /etc/diode/tls/.self-signed is what
+# stops diode-reconcile reissuing over the installed certificate on the next
+# boot, and what switches HSTS on. Only the paths change.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "diode-tls: run as root (reads the private key)" >&2
+	echo "  try: sudo diode-tls $*" >&2
+	exit 1
+fi
+
+echo "diode-tls: not implemented in this scaffold" >&2
+exit 1
