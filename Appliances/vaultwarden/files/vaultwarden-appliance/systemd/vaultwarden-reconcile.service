@@ -1,0 +1,24 @@
+[Unit]
+Description=Vaultwarden appliance configuration reconciliation
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Every boot after the first: re-applies the deploy form's configuration (the
+# name, settings, allowlists, firewall, proxy and a generated certificate).
+# Never generates a secret, never touches the database or the data directory.
+# Ordering and the absence of cloud-final.service: see vaultwarden-bootstrap.
+# After the bootstrap too, so on a first boot the two never run concurrently.
+After=ovf-settings.service network-online.target postgresql.service ufw.service vaultwarden-datadisk.service vaultwarden-bootstrap.service
+Wants=network-online.target
+RequiresMountsFor=/srv/vaultwarden
+# Before docker too, so a proxy change made in vCenter reaches dockerd on the
+# next boot rather than the one after.
+Before=vaultwarden.service nginx.service docker.service
+ConditionPathExists=/var/lib/vaultwarden-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vaultwarden-firstboot.py --reconcile
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

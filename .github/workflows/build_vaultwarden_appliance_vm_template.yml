@@ -1,0 +1,256 @@
+name: Build Vaultwarden Appliance VM Template
+
+on:
+  workflow_dispatch:
+    inputs:
+      vaultwarden_version:
+        description: Vaultwarden release to ship (for example 1.37.5) - never latest
+        type: string
+        required: false
+        default: 1.37.5
+      vaultwarden_image_digest:
+        description: sha256 digest of the vaultwarden/server image index for that release
+        type: string
+        required: false
+        default: sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      ssh_timeout:
+        description: Packer SSH wait timeout (for example 45m or 1h)
+        type: string
+        required: false
+        default: 45m
+      firmware:
+        description: VM firmware - must match the firmware the hardened base template was built with
+        type: choice
+        required: false
+        default: efi-secure
+        options:
+          - efi-secure
+          - efi
+          - bios
+      cpu_count:
+        description: vCPUs for the appliance template
+        type: number
+        required: false
+        default: 2
+      memory_mb:
+        description: Memory in MB for the appliance template
+        type: number
+        required: false
+        default: 8192
+      data_disk_gb:
+        description: Size in GB of the separate /srv/vaultwarden data disk (minimum 20)
+        type: number
+        required: false
+        default: 100
+
+  workflow_call:
+    inputs:
+      vaultwarden_version:
+        description: Vaultwarden release to ship (for example 1.37.5) - never latest
+        type: string
+        required: false
+        default: 1.37.5
+      vaultwarden_image_digest:
+        description: sha256 digest of the vaultwarden/server image index for that release
+        type: string
+        required: false
+        default: sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      ssh_timeout:
+        description: Packer SSH wait timeout (for example 45m or 1h)
+        type: string
+        required: false
+        default: 45m
+      firmware:
+        description: VM firmware - must match the firmware the hardened base template was built with
+        type: string
+        required: false
+        default: efi-secure
+      cpu_count:
+        description: vCPUs for the appliance template
+        type: number
+        required: false
+        default: 2
+      memory_mb:
+        description: Memory in MB for the appliance template
+        type: number
+        required: false
+        default: 8192
+      data_disk_gb:
+        description: Size in GB of the separate /srv/vaultwarden data disk (minimum 20)
+        type: number
+        required: false
+        default: 100
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  # Static checks that need no vCenter, kept in their own job so a broken
+  # script fails in a minute without the build runner ever touching vSphere.
+  check:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
+    steps:
+      - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # vaultwarden-firstboot.py is the appliance: it reads the deploy form,
+      # renders the settings, issues the certificate and owns the firewall
+      # rules. None of that can be exercised on a built template, so its logic
+      # is checked here first, with nothing but python3 and bash.
+      - name: Check the appliance logic
+        # Explicit: the step uses shopt and arrays, and inside a container the
+        # default shell is whatever the image resolves `bash` to.
+        shell: bash
+        run: |
+          python3 Appliances/vaultwarden/tests/test_firstboot.py
+          shopt -s nullglob
+          checks=(Appliances/vaultwarden/tests/*.sh)
+          if [ "${#checks[@]}" -eq 0 ]; then
+            echo "::error::No shell checks in Appliances/vaultwarden/tests/" >&2
+            exit 1
+          fi
+          for check in "${checks[@]}"; do
+            echo "== ${check}"
+            bash "${check}"
+          done
+          for script in Appliances/vaultwarden/files/*.sh Appliances/vaultwarden/files/vaultwarden-appliance/bin/*; do
+            bash -n "${script}"
+          done
+
+      - name: Verify the shared deploy form
+        run: |
+          python3 - <<'PY'
+          import importlib.util, json, os, sys, types
+
+          for name in ('pyVim', 'pyVim.connect', 'pyVim.task', 'pyVmomi'):
+              sys.modules.setdefault(name, types.ModuleType(name))
+          sys.modules['pyVim.connect'].SmartConnect = None
+          sys.modules['pyVim.connect'].Disconnect = None
+          sys.modules['pyVim.task'].WaitForTask = None
+          sys.modules['pyVmomi'].vim = None
+
+          BASE = ['hostname', 'username', 'password', 'public-keys',
+                  'network.ip4', 'network.gw4', 'network.ip6', 'network.gw6',
+                  'network.dns', 'network.domain', 'user-data']
+
+          def load():
+              spec = importlib.util.spec_from_file_location(
+                  'd', 'shared/scripts/set-vapp-descriptors.py')
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return [d.id for d in module.DESCRIPTORS]
+
+          os.environ['VAPP_EXTRA_DESCRIPTORS'] = 'shared/vapp-descriptors/vaultwarden.json'
+          ids = load()
+          with open('shared/vapp-descriptors/vaultwarden.json') as handle:
+              expected = [d['id'] for d in json.load(handle)['descriptors']]
+          extras = [i for i in ids if i not in BASE]
+          assert extras == expected, (extras, expected)
+          assert ids[-1] == 'user-data', ids
+          assert [i for i in ids if i in BASE] == BASE, ids
+          print('deploy form: %d properties' % len(ids))
+          PY
+
+      - name: Packer fmt and validate
+        env:
+          # validate needs every variable set; none of these are used.
+          PKR_VAR_vCenterServer: validate.invalid
+          PKR_VAR_vCenterUsername: validate
+          PKR_VAR_vCenterPassword: validate
+          PKR_VAR_vCenterDatacenterName: validate
+          PKR_VAR_clusterName: validate
+          PKR_VAR_datastoreName: validate
+          PKR_VAR_sourceTemplateName: validate
+          PKR_VAR_templateName: validate
+          PKR_VAR_libraryName: validate
+          PKR_VAR_portGroup: validate
+          PKR_VAR_vmName: validate
+          PKR_VAR_vmFolder: /
+          PKR_VAR_buildPublicKey: ssh-ed25519 AAAA validate
+          PKR_VAR_buildPrivateKeyFile: /dev/null
+          PKR_VAR_vaultwardenVersion: ${{ inputs.vaultwarden_version }}
+          PKR_VAR_vaultwardenImageDigest: ${{ inputs.vaultwarden_image_digest }}
+        run: |
+          packer init ./shared/config.pkr.hcl
+          packer fmt -check ./Appliances/vaultwarden
+          cd Appliances/vaultwarden
+          packer validate -only='vsphere-clone.base' .
+
+  packer:
+    needs: check
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    container: "${{ vars.PACKER_DOCKER_IMAGE }}:${{ vars.PACKER_DOCKER_IMAGE_TAG }}"
+    env:
+      PKR_VAR_vCenterServer: ${{ secrets.VCENTER_HOST }}
+      PKR_VAR_vCenterUsername: ${{ secrets.VCENTER_USER }}
+      PKR_VAR_vCenterPassword: ${{ secrets.VCENTER_PASS }}
+      PKR_VAR_vCenterInsecureConnection: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      PKR_VAR_vCenterDatacenterName: ${{ vars.VCENTER_DATACENTER_NAME }}
+      PKR_VAR_clusterName: ${{ vars.VCENTER_CLUSTER_NAME }}
+      PKR_VAR_datastoreName: ${{ vars.VCENTER_DATASTORE_NAME }}
+      PKR_VAR_sshTimeout: ${{ inputs.ssh_timeout }}
+      PKR_VAR_cpuCount: ${{ inputs.cpu_count }}
+      PKR_VAR_memoryMb: ${{ inputs.memory_mb }}
+      PKR_VAR_dataDiskGb: ${{ inputs.data_disk_gb }}
+      PKR_VAR_firmware: ${{ inputs.firmware }}
+      # Cloned from the published hardened image, like the NetBox appliance.
+      PKR_VAR_sourceTemplateName: ${{ vars.UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_templateName: ${{ vars.VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+      PKR_VAR_vaultwardenVersion: ${{ inputs.vaultwarden_version }}
+      PKR_VAR_vaultwardenImageDigest: ${{ inputs.vaultwarden_image_digest }}
+      PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+      PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
+      PKR_VAR_vmName: "vaultwarden-appliance-temp"
+      PKR_VAR_vmFolder: "/"
+      PKR_VAR_buildUsername: "pkrbuild"
+      PACKER_LOG: 1
+    steps:
+      - uses: Anush008/clean-after-action@073a5f242d4ca633e252aa465cbb32ef792e4f7a # v4.2.0
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Same throwaway-account scheme as the NetBox build: the key pair is per
+      # run, never leaves the runner, and authorizes an account finalize.sh
+      # deletes.
+      - name: Generate ephemeral build SSH key
+        id: buildkey
+        run: |
+          install -d -m 700 "${RUNNER_TEMP}/vaultwarden-build"
+          rm -f "${RUNNER_TEMP}/vaultwarden-build/id_ed25519" "${RUNNER_TEMP}/vaultwarden-build/id_ed25519.pub"
+          ssh-keygen -q -t ed25519 -N '' -C packer-vaultwarden-build -f "${RUNNER_TEMP}/vaultwarden-build/id_ed25519"
+          {
+            echo "public_key=$(cat "${RUNNER_TEMP}/vaultwarden-build/id_ed25519.pub")"
+            echo "private_key_file=${RUNNER_TEMP}/vaultwarden-build/id_ed25519"
+          } >> $GITHUB_OUTPUT
+
+      - name: Packer init
+        run: |
+          packer init ./shared/config.pkr.hcl
+
+      - name: Packer build
+        env:
+          PKR_VAR_buildPublicKey: ${{ steps.buildkey.outputs.public_key }}
+          PKR_VAR_buildPrivateKeyFile: ${{ steps.buildkey.outputs.private_key_file }}
+        run: |
+          cd Appliances/vaultwarden
+          packer build -timestamp-ui -force -only='vsphere-clone.base' .
+
+      - name: Normalize deploy form in the library item
+        env:
+          VCENTER_SERVER: ${{ secrets.VCENTER_HOST }}
+          VCENTER_USERNAME: ${{ secrets.VCENTER_USER }}
+          VCENTER_PASSWORD: ${{ secrets.VCENTER_PASS }}
+          VCENTER_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+          LIBRARY_NAME: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          TEMPLATE_NAME: ${{ vars.VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+          VAPP_EXTRA_DESCRIPTORS: shared/vapp-descriptors/vaultwarden.json
+        run: |
+          python3 shared/scripts/normalize-library-ovf.py
+
+      - name: Remove the ephemeral build SSH key
+        if: always()
+        run: |
+          rm -rf "${RUNNER_TEMP}/vaultwarden-build"

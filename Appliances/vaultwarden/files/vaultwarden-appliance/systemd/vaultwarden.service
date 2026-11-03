@@ -1,0 +1,38 @@
+[Unit]
+Description=Vaultwarden (container, managed by Docker Compose)
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Docker runs the container; systemd decides when. Requires= plus PartOf=: a
+# stop or restart of docker.service (an unattended-upgrades patch, say) stops
+# or restarts this unit with it, rather than leaving it pointing at a daemon
+# that is gone.
+Requires=docker.service vaultwarden-bootstrap.service
+PartOf=docker.service
+# postgresql@.service instances are ordered Before=postgresql.service, so this
+# waits for the cluster itself; vaultwarden-guard then waits for it to accept
+# connections, and Vaultwarden retries on top (DB_CONNECTION_RETRIES) - three
+# layers, because depends_on-style ordering alone says nothing about
+# readiness.
+After=docker.service postgresql.service vaultwarden-bootstrap.service vaultwarden-reconcile.service vaultwarden-datadisk.service
+Wants=postgresql.service
+RequiresMountsFor=/srv/vaultwarden
+# Restart=always below, but not forever: a guard refusal (missing disk) must
+# end in a failed unit someone sees, not a loop that hides it.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/etc/vaultwarden
+ExecStartPre=/usr/local/sbin/vaultwarden-guard pre-start
+# Foreground, so the container's output is this unit's journal and its exit is
+# this unit's exit. --exit-code-from implies --abort-on-container-exit.
+ExecStart=/usr/bin/docker compose --project-directory /etc/vaultwarden up --no-color --no-log-prefix --exit-code-from vaultwarden
+ExecStartPost=/usr/local/sbin/vaultwarden-guard post-start
+ExecStop=/usr/bin/docker compose --project-directory /etc/vaultwarden down --timeout 30
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

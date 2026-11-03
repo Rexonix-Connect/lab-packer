@@ -1,0 +1,78 @@
+#!/bin/bash
+# Manage the Vaultwarden admin page token.
+#
+#   vaultwarden-admin-token rotate     new random token; prints it once
+#   vaultwarden-admin-token hash       hash a token you type (for the deploy
+#                                      form's vaultwarden.admin-token-hash)
+#   vaultwarden-admin-token disable    remove the token: the admin page is off
+#
+# The appliance stores only the argon2id hash, as a file read through
+# ADMIN_TOKEN_FILE, never in the container environment. nginx gates /admin by
+# address on top of this (vaultwarden.admin-allow).
+set -euo pipefail
+
+SECRET=/etc/vaultwarden/secrets/admin_token
+ENV_FILE=/etc/vaultwarden/vaultwarden.env
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "vaultwarden-admin-token: run as root" >&2
+	echo "  try: sudo vaultwarden-admin-token $*" >&2
+	exit 1
+fi
+
+hash_token() { # stdin: the token
+	argon2 "$(openssl rand -base64 16 | tr -d '=\n')" -id -t 3 -k 65540 -p 4 -e
+}
+
+apply() {
+	# The bootstrap's reconcile renders ADMIN_TOKEN_FILE from whether the
+	# secret exists, and restarts Vaultwarden if the settings changed.
+	systemctl restart vaultwarden-reconcile.service
+	systemctl restart vaultwarden.service
+}
+
+case "${1:-}" in
+rotate)
+	token="$(openssl rand -base64 33 | tr '+/' '-_' | tr -d '=\n')"
+	install -d -m 0750 -o root -g vaultwarden "$(dirname "${SECRET}")"
+	umask 077
+	printf '%s' "${token}" | hash_token | tr -d '\n' >"${SECRET}.new"
+	chown root:vaultwarden "${SECRET}.new"
+	chmod 0440 "${SECRET}.new"
+	mv "${SECRET}.new" "${SECRET}"
+	apply
+	echo "New admin token (shown once, store it now):"
+	echo
+	echo "    ${token}"
+	echo
+	echo "Existing admin sessions end within ADMIN_SESSION_LIFETIME (20 minutes)."
+	;;
+hash)
+	read -r -s -p 'Token to hash: ' token
+	echo >&2
+	read -r -s -p 'Again: ' again
+	echo >&2
+	[ "${token}" = "${again}" ] || {
+		echo "vaultwarden-admin-token: the two entries differ" >&2
+		exit 1
+	}
+	[ "${#token}" -ge 20 ] || {
+		echo "vaultwarden-admin-token: use at least 20 characters" >&2
+		exit 1
+	}
+	printf '%s' "${token}" | hash_token
+	;;
+disable)
+	rm -f "${SECRET}"
+	apply
+	if grep -q '^ADMIN_TOKEN_FILE=' "${ENV_FILE}"; then
+		echo "vaultwarden-admin-token: ADMIN_TOKEN_FILE is still set; check journalctl -u vaultwarden-reconcile" >&2
+		exit 1
+	fi
+	echo "The admin page is disabled. Re-enable it with: vaultwarden-admin-token rotate"
+	;;
+*)
+	sed -n '4,8p' "$0" | sed 's/^# \{0,1\}//'
+	[ "${1:-}" = '-h' ] || [ "${1:-}" = '--help' ] || exit 2
+	;;
+esac

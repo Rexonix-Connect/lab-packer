@@ -1,0 +1,151 @@
+#!/bin/bash
+# Restore this appliance from a vaultwarden-backup pair.
+#
+#   vaultwarden-restore                       list the backups on this appliance
+#   vaultwarden-restore <stamp> [--yes]       restore one of them
+#   vaultwarden-restore <file.dump> [--yes]   restore a pair copied in from
+#                                             elsewhere (the .files.tar.gz must
+#                                             sit next to it)
+#
+# Restores the database, the data directory (attachments, Sends, rsa_key.pem,
+# config.json) and the secrets (admin token hash, SMTP and SSO secrets). The
+# settings file is NOT restored: it is rendered from this appliance's own
+# deploy form, so a backup taken on another appliance cannot change what this
+# one calls itself.
+#
+# What protects a live instance from a careless restore:
+#   - it only ever acts on the appliance it runs on, and asks you to type that
+#     appliance's host name;
+#   - it takes a safety backup of the current state first;
+#   - it refuses a backup written by a newer Vaultwarden than this one runs,
+#     because the database schema cannot be migrated backwards.
+set -euo pipefail
+
+DATA_ROOT=/srv/vaultwarden
+BACKUP_DIR="${DATA_ROOT}/backups"
+CONFIG_DIR=/etc/vaultwarden
+STATE_DIR=/var/lib/vaultwarden-appliance
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "vaultwarden-restore: run as root (stops services and replaces the database)" >&2
+	echo "  try: sudo vaultwarden-restore $*" >&2
+	exit 1
+fi
+
+die() {
+	echo "vaultwarden-restore: ${1}" >&2
+	exit 1
+}
+
+version_of() { # version_of <image reference> -> 1.37.5
+	local ref="${1#*=}"
+	ref="${ref%@*}"
+	echo "${ref##*:}"
+}
+
+if [ -z "${1:-}" ] || [ "${1}" = '-h' ] || [ "${1}" = '--help' ]; then
+	echo "usage: vaultwarden-restore <timestamp|dump-file> [--yes]"
+	echo
+	echo "Backups on this appliance:"
+	ls -1 "${BACKUP_DIR}"/vaultwarden-*.dump 2>/dev/null |
+		sed 's#.*/vaultwarden-#  #; s#\.dump$##' || echo "  (none)"
+	[ -n "${1:-}" ] && exit 0
+	exit 2
+fi
+
+target="${1}"
+assume_yes="${2:-}"
+if [ -f "${target}" ]; then
+	dump="$(readlink -f "${target}")"
+	files="${dump%.dump}.files.tar.gz"
+else
+	dump="${BACKUP_DIR}/vaultwarden-${target}.dump"
+	files="${BACKUP_DIR}/vaultwarden-${target}.files.tar.gz"
+fi
+[ -f "${dump}" ] || die "${dump} does not exist"
+[ -f "${files}" ] || die "${files} does not exist; a database without its RSA key and attachments is not a restorable backup"
+
+findmnt --noheadings --mountpoint "${DATA_ROOT}" >/dev/null || die "${DATA_ROOT} is not mounted"
+[ -f "${CONFIG_DIR}/volume-id" ] || die "this appliance is not bootstrapped yet"
+
+echo "vaultwarden-restore: checking the backup ..."
+pg_restore --list "${dump}" >/dev/null || die "${dump} is not a readable pg_dump archive"
+work="$(mktemp -d)"
+trap 'rm -rf "${work}"' EXIT
+tar --extract --gzip --file="${files}" --directory="${work}" backup-info ||
+	die "${files} has no backup-info; it was not written by vaultwarden-backup"
+tar --list --gzip --file="${files}" | grep -q "^${DATA_ROOT#/}/data/rsa_key.pem$" ||
+	die "${files} does not contain rsa_key.pem"
+
+backup_image="$(grep '^VAULTWARDEN_IMAGE=' "${work}/backup-info" || true)"
+current_image="$(grep '^VAULTWARDEN_IMAGE=' "${CONFIG_DIR}/.env")"
+backup_version="$(version_of "${backup_image}")"
+current_version="$(version_of "${current_image}")"
+newest="$(printf '%s\n%s\n' "${backup_version}" "${current_version}" | sort -V | tail -n 1)"
+if [ -n "${backup_version}" ] && [ "${newest}" != "${current_version}" ]; then
+	die "the backup was written by Vaultwarden ${backup_version}, newer than the ${current_version} this appliance runs. Its schema cannot be migrated backwards: upgrade first (vaultwarden-upgrade ${backup_version})"
+fi
+
+this_host="$(hostname -f 2>/dev/null || hostname)"
+echo
+echo "  Backup        $(basename "${dump}")"
+sed 's/^/                /' "${work}/backup-info"
+echo "  This host     ${this_host} (volume $(cat "${CONFIG_DIR}/volume-id"))"
+echo
+echo "This REPLACES the Vaultwarden database, attachments, Sends, signing key and"
+echo "secrets on ${this_host}. Every client signed in here is signed out."
+if [ "${assume_yes}" != '--yes' ]; then
+	read -r -p "Type the host name '${this_host}' to continue: " answer
+	[ "${answer}" = "${this_host}" ] || die "aborted"
+fi
+
+if [ -f "${STATE_DIR}/initialized" ]; then
+	echo "vaultwarden-restore: taking a safety backup of the current state first ..."
+	vaultwarden-backup
+fi
+
+echo "vaultwarden-restore: stopping Vaultwarden ..."
+systemctl stop vaultwarden.service
+# Whatever fails from here, say where things stand rather than leave the
+# operator guessing whether the old or the new data is in place.
+trap 'rm -rf "${work}"; echo "vaultwarden-restore: FAILED part-way. Vaultwarden is stopped; the safety backup (if one was taken) is the newest in ${BACKUP_DIR}." >&2' EXIT
+
+echo "vaultwarden-restore: restoring the database ..."
+runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 \
+	-c 'DROP DATABASE IF EXISTS vaultwarden WITH (FORCE)' \
+	-c "CREATE DATABASE vaultwarden OWNER vaultwarden ENCODING 'UTF8' LOCALE 'C.UTF-8' TEMPLATE template0"
+runuser -u vaultwarden -- pg_restore --no-owner --no-privileges --exit-on-error \
+	-h /run/postgresql -d vaultwarden <"${dump}"
+
+echo "vaultwarden-restore: restoring the data directory and secrets ..."
+find "${DATA_ROOT}/data" -mindepth 1 -delete
+find "${CONFIG_DIR}/secrets" -mindepth 1 -delete
+tar --extract --gzip --file="${files}" --directory=/ \
+	"${DATA_ROOT#/}/data" "${CONFIG_DIR#/}/secrets"
+chown -R vaultwarden:vaultwarden "${DATA_ROOT}/data"
+chmod 0700 "${DATA_ROOT}/data"
+chown root:vaultwarden "${CONFIG_DIR}/secrets"
+chmod 0750 "${CONFIG_DIR}/secrets"
+find "${CONFIG_DIR}/secrets" -type f -exec chown root:vaultwarden {} + -exec chmod 0440 {} +
+
+# The restored schema and key are now this appliance's: the guard protects
+# them from the next start on.
+install -d -m 0755 "${STATE_DIR}"
+echo "restored $(basename "${dump}") $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"${STATE_DIR}/initialized"
+
+echo "vaultwarden-restore: re-rendering settings and starting Vaultwarden ..."
+# Re-renders the *_FILE entries for whichever secrets the backup carried.
+systemctl restart vaultwarden-reconcile.service
+systemctl start vaultwarden.service
+trap 'rm -rf "${work}"' EXIT
+
+code=''
+for _ in $(seq 1 30); do
+	code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/alive || true)"
+	[ "${code}" = '200' ] && break
+	sleep 2
+done
+[ "${code}" = '200' ] || die "Vaultwarden did not answer after the restore (HTTP ${code:-000}); journalctl -u vaultwarden -b"
+echo "vaultwarden-restore: restored $(basename "${dump}")."
+echo "  Now sign in with a known account and check vaults, organizations and an"
+echo "  attachment before telling users the service is back."

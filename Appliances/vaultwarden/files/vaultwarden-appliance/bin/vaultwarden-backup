@@ -1,0 +1,124 @@
+#!/bin/bash
+# Back up everything a Vaultwarden appliance cannot rebuild from the image.
+#
+#   vaultwarden-<stamp>.dump           pg_dump --format=custom of the database
+#   vaultwarden-<stamp>.files.tar.gz   the data directory (attachments, Sends,
+#                                      rsa_key.pem, config.json), the settings,
+#                                      the secrets and the deployment metadata
+#
+# Both halves are needed: the RSA key signs every login token, and without the
+# attachment files their database rows point at nothing. By default Vaultwarden
+# is stopped for the few seconds both take, so they describe the same instant;
+# it is started again however the backup ends.
+#
+# Run nightly by vaultwarden-backup.timer, by hand before any risky change, and
+# by vaultwarden-upgrade before every upgrade. Settings: /etc/default/vaultwarden-backup.
+set -euo pipefail
+
+DATA_ROOT=/srv/vaultwarden
+BACKUP_DIR="${DATA_ROOT}/backups"
+CONFIG_DIR=/etc/vaultwarden
+RETENTION_DAYS=14
+QUIESCE=yes
+OFFSITE_COMMAND=
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "vaultwarden-backup: run as root (reads the database and the secrets)" >&2
+	echo "  try: sudo vaultwarden-backup $*" >&2
+	exit 1
+fi
+
+# shellcheck disable=SC1091
+[ -f /etc/default/vaultwarden-backup ] && . /etc/default/vaultwarden-backup
+
+findmnt --noheadings --mountpoint "${DATA_ROOT}" >/dev/null || {
+	echo "vaultwarden-backup: ${DATA_ROOT} is not mounted" >&2
+	exit 1
+}
+[ -f "${CONFIG_DIR}/volume-id" ] || {
+	echo "vaultwarden-backup: the appliance is not bootstrapped" >&2
+	exit 1
+}
+
+install -d -m 0700 -o root -g root "${BACKUP_DIR}"
+stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+dump="${BACKUP_DIR}/vaultwarden-${stamp}.dump"
+files="${BACKUP_DIR}/vaultwarden-${stamp}.files.tar.gz"
+meta="$(mktemp -d)"
+umask 077
+
+was_active=no
+if [ "${QUIESCE}" = 'yes' ] && systemctl is-active --quiet vaultwarden.service; then
+	was_active=yes
+fi
+# Whatever happens below - a full disk, a failed dump - Vaultwarden comes back
+# if it was running, and half-written files do not masquerade as a backup.
+finish() {
+	rc=$?
+	rm -rf "${meta}"
+	if [ "${rc}" -ne 0 ]; then
+		rm -f "${dump}" "${files}"
+		echo "vaultwarden-backup: FAILED (exit ${rc}); partial files removed" >&2
+	fi
+	if [ "${was_active}" = 'yes' ]; then
+		systemctl start vaultwarden.service ||
+			echo "vaultwarden-backup: WARNING - could not restart vaultwarden.service" >&2
+	fi
+	exit "${rc}"
+}
+trap finish EXIT
+
+if [ "${was_active}" = 'yes' ]; then
+	echo "vaultwarden-backup: stopping Vaultwarden for a consistent backup ..."
+	systemctl stop vaultwarden.service
+fi
+
+echo "vaultwarden-backup: dumping the database ..."
+# Peer authentication: the dump connects as the vaultwarden account.
+runuser -u vaultwarden -- pg_dump --format=custom --no-owner --no-privileges \
+	-h /run/postgresql -d vaultwarden >"${dump}"
+
+echo "vaultwarden-backup: archiving the data directory and configuration ..."
+{
+	echo "created=${stamp}"
+	echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+	echo "volume_id=$(cat "${CONFIG_DIR}/volume-id")"
+	grep '^VAULTWARDEN_IMAGE=' "${CONFIG_DIR}/.env" || true
+	echo "postgresql=$(runuser -u postgres -- psql -tAc 'SHOW server_version' 2>/dev/null || echo unknown)"
+	echo "quiesced=${was_active}"
+} >"${meta}/backup-info"
+# Physical paths, relative to /. The icon cache is regenerated on demand and
+# can be large, so it is left out.
+tar --create --gzip --file="${files}" \
+	--exclude="${DATA_ROOT#/}/data/icon_cache" \
+	--exclude="${DATA_ROOT#/}/data/tmp" \
+	--directory=/ \
+	"${DATA_ROOT#/}/data" \
+	"${CONFIG_DIR#/}/secrets" \
+	"${CONFIG_DIR#/}/vaultwarden.env" \
+	"${CONFIG_DIR#/}/.env" \
+	--directory="${meta}" backup-info
+chmod 0600 "${dump}" "${files}"
+
+# Verify the archive members are readable and the dump is a valid archive
+# before calling this a backup at all.
+pg_restore --list "${dump}" >/dev/null
+tar --list --gzip --file="${files}" >/dev/null
+
+if [ "${was_active}" = 'yes' ]; then
+	systemctl start vaultwarden.service
+	was_active=no
+fi
+
+if [ -n "${OFFSITE_COMMAND}" ]; then
+	echo "vaultwarden-backup: copying off the appliance ..."
+	# shellcheck disable=SC2086
+	${OFFSITE_COMMAND} "${dump}" "${files}"
+fi
+
+echo "vaultwarden-backup: pruning backups older than ${RETENTION_DAYS} days ..."
+find "${BACKUP_DIR}" -maxdepth 1 -type f \
+	\( -name 'vaultwarden-*.dump' -o -name 'vaultwarden-*.files.tar.gz' \) \
+	-mtime "+${RETENTION_DAYS}" -print -delete
+
+echo "vaultwarden-backup: wrote $(basename "${dump}") and $(basename "${files}")"

@@ -1,0 +1,115 @@
+#!/bin/bash
+# Move a deployed appliance to another Vaultwarden release.
+#
+#   vaultwarden-upgrade <version> <sha256:digest> [--yes]
+#
+# Both the version and the image digest are required: a tag can be moved after
+# you reviewed it, a digest cannot. Find the digest on the release's Docker Hub
+# tag page or with `docker buildx imagetools inspect vaultwarden/server:<ver>`.
+#
+# Before anything changes it takes a backup, because Vaultwarden migrates the
+# database on start and there is no downgrade: the way back from a bad upgrade
+# is the previous image plus that backup, and the commands are printed.
+#
+# Never "latest". Ubuntu packages (PostgreSQL, nginx, Docker) are patched by
+# unattended-upgrades and are not this script's business.
+set -euo pipefail
+
+CONFIG_DIR=/etc/vaultwarden
+ENV="${CONFIG_DIR}/.env"
+REPOSITORY="${VAULTWARDEN_REPOSITORY:-docker.io/vaultwarden/server}"
+LOG=/var/lib/vaultwarden-appliance/upgrades.log
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "vaultwarden-upgrade: run as root" >&2
+	echo "  try: sudo vaultwarden-upgrade $*" >&2
+	exit 1
+fi
+
+die() {
+	echo "vaultwarden-upgrade: ${1}" >&2
+	exit 1
+}
+
+version="${1:-}"
+digest="${2:-}"
+assume_yes="${3:-}"
+[[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+	die "usage: vaultwarden-upgrade <X.Y.Z> <sha256:digest> [--yes] (never 'latest')"
+[[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+	die "the second argument must be the image digest, sha256:<64 hex>"
+
+current_ref="$(sed -n 's/^VAULTWARDEN_IMAGE=//p' "${ENV}")"
+current="${current_ref%@*}"
+current="${current##*:}"
+[ "${version}" != "${current}" ] || die "Vaultwarden ${current} is already installed"
+newest="$(printf '%s\n%s\n' "${version}" "${current}" | sort -V | tail -n 1)"
+[ "${newest}" = "${version}" ] ||
+	die "${version} is older than the installed ${current}. Downgrades are not supported - the database was migrated forward; restore a backup taken under ${version} instead"
+
+new_ref="${REPOSITORY}:${version}@${digest}"
+cat <<EOF
+Upgrading Vaultwarden ${current} -> ${version}
+  image ${new_ref}
+
+Before continuing, read:
+  https://github.com/dani-garcia/vaultwarden/releases/tag/${version}
+  https://github.com/dani-garcia/vaultwarden/security/advisories
+in particular any "Upgrade notes" - since 1.37.5, for example, invalid
+configuration values stop startup instead of being ignored.
+EOF
+if [ "${assume_yes}" != '--yes' ]; then
+	read -r -p "Type 'upgrade' to continue: " answer
+	[ "${answer}" = 'upgrade' ] || die "aborted"
+fi
+
+echo "vaultwarden-upgrade: pulling ${new_ref} ..."
+docker pull --quiet "${new_ref}"
+docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${new_ref}" |
+	grep -qFx -e "${REPOSITORY#docker.io/}@${digest}" -e "${REPOSITORY}@${digest}" ||
+	die "the pulled image does not carry digest ${digest}"
+
+echo "vaultwarden-upgrade: backing up first (there is no schema downgrade) ..."
+vaultwarden-backup
+backup="$(ls -1t /srv/vaultwarden/backups/vaultwarden-*.dump | head -n 1)"
+stamp="$(basename "${backup}" .dump)"
+stamp="${stamp#vaultwarden-}"
+
+cp -a "${ENV}" "${ENV}.previous"
+sed -i "s#^VAULTWARDEN_IMAGE=.*#VAULTWARDEN_IMAGE=${new_ref}#" "${ENV}"
+docker compose --project-directory "${CONFIG_DIR}" config --quiet
+
+rollback() {
+	cat >&2 <<EOF
+
+vaultwarden-upgrade: ${1}
+To go back to ${current}:
+    cp -a ${ENV}.previous ${ENV}
+    vaultwarden-restore ${stamp}
+(The restore is needed, not optional: ${version} may already have migrated
+the database, and ${current} cannot read a newer schema.)
+EOF
+	exit 1
+}
+
+echo "vaultwarden-upgrade: restarting on ${version} ..."
+systemctl restart vaultwarden.service || rollback "vaultwarden.service did not start on ${version}"
+reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk '{print $2}' || true)"
+[ "${reported}" = "${version}" ] || rollback "the container reports ${reported:-nothing}, expected ${version}"
+code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/alive || true)"
+[ "${code}" = '200' ] || rollback "/alive answered ${code:-000} through nginx"
+web="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/ || true)"
+[ "${web}" = '200' ] || rollback "the web vault answered ${web:-000}"
+
+# state.json carries the image reference vaultwarden-status reports.
+systemctl restart vaultwarden-reconcile.service || true
+install -d -m 0755 "$(dirname "${LOG}")"
+echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') ${current} -> ${version} ${new_ref} pre-upgrade-backup=${stamp}" >>"${LOG}"
+
+echo "vaultwarden-upgrade: Vaultwarden ${version} is serving."
+echo "  Smoke-test: sign in, open an item, open an attachment, and check the"
+echo "  browser extension and a mobile app sync. Pre-upgrade backup: ${stamp}"
+# Not `docker image prune -a`: with pull_policy: never, pruning while the
+# container happens to be stopped would delete the image the appliance needs.
+echo "  The previous image stays cached for a rollback. Once you are sure:"
+echo "      docker image rm ${current_ref}"

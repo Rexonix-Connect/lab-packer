@@ -1,0 +1,17 @@
+[Unit]
+Description=Grow the Vaultwarden data filesystem to fill its disk
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Whole-device ext4, no partition table: enlarging disk 2 in vCenter leaves
+# nothing to do but resize2fs, which is a no-op once it already fills the
+# device, so this runs on every boot.
+RequiresMountsFor=/srv/vaultwarden
+Before=postgresql.service vaultwarden-bootstrap.service vaultwarden-reconcile.service vaultwarden.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vaultwarden-datadisk-grow
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

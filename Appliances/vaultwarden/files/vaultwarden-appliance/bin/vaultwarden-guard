@@ -1,0 +1,117 @@
+#!/bin/bash
+# Refuse to start Vaultwarden on anything but this deployment's own data.
+#
+# The failure this exists for is quiet: Vaultwarden creates its schema and a
+# new RSA signing key on any empty database and data directory it is given. A
+# missing data disk, a blank replacement disk, or a dropped database would
+# therefore come up as a healthy, empty password manager - every user's vault
+# "gone", and the first person to log in re-registering over the top of it.
+#
+#   pre-start    run by vaultwarden.service before the container starts
+#   post-start   waits for /alive, and marks the deployment initialized once
+#                Vaultwarden has created its schema and signing key
+set -euo pipefail
+
+DATA_ROOT="${VAULTWARDEN_DATA_ROOT:-/srv/vaultwarden}"
+CONFIG_DIR="${VAULTWARDEN_CONFIG_DIR:-/etc/vaultwarden}"
+STATE_DIR="${VAULTWARDEN_APPLIANCE_STATE_DIR:-/var/lib/vaultwarden-appliance}"
+INITIALIZED="${STATE_DIR}/initialized"
+PG_SOCKET_DIR=/run/postgresql
+
+refuse() {
+	echo "vaultwarden-guard: REFUSING TO START: ${1}" >&2
+	shift
+	for line in "$@"; do
+		echo "  ${line}" >&2
+	done
+	exit 1
+}
+
+db() { # db <sql> - as the vaultwarden role, exactly as the container connects
+	runuser -u vaultwarden -- psql -X -q -tA -h "${PG_SOCKET_DIR}" \
+		-d vaultwarden -c "${1}" 2>/dev/null
+}
+
+has_schema() {
+	[ "$(db "SELECT to_regclass('public.__diesel_schema_migrations') IS NOT NULL" || true)" = 't' ]
+}
+
+pre_start() {
+	findmnt --noheadings --mountpoint "${DATA_ROOT}" >/dev/null 2>&1 ||
+		refuse "${DATA_ROOT} is not mounted." \
+			"The data disk is missing or failed to mount; check 'lsblk' and 'journalctl -b -u srv-vaultwarden.mount'." \
+			"Vaultwarden will not start on the root disk in its place."
+
+	[ -f "${CONFIG_DIR}/volume-id" ] ||
+		refuse "${CONFIG_DIR}/volume-id is missing; the appliance has not been bootstrapped." \
+			"systemctl start vaultwarden-bootstrap"
+	expected="$(cat "${CONFIG_DIR}/volume-id")"
+	actual="$(cat "${DATA_ROOT}/.volume-id" 2>/dev/null || true)"
+	[ -n "${actual}" ] ||
+		refuse "the disk mounted at ${DATA_ROOT} carries no volume id." \
+			"It is blank or not this appliance's data disk. Attach the right disk," \
+			"or restore onto this one with vaultwarden-restore."
+	[ "${expected}" = "${actual}" ] ||
+		refuse "the disk mounted at ${DATA_ROOT} belongs to another deployment." \
+			"expected volume ${expected}, found ${actual}." \
+			"If this disk is the one you mean to use, adopt it explicitly:" \
+			"  cp ${DATA_ROOT}/.volume-id ${CONFIG_DIR}/volume-id"
+
+	[ -d "${DATA_ROOT}/data" ] ||
+		refuse "${DATA_ROOT}/data does not exist on the data disk."
+
+	# Readiness itself is guaranteed by unit ordering (postgresql@ is Type=notify
+	# and ordered before this); this is a connect check, -t is its timeout.
+	pg_isready -q -t 60 -h "${PG_SOCKET_DIR}" ||
+		refuse "PostgreSQL is not accepting connections on ${PG_SOCKET_DIR}." \
+			"journalctl -b -u 'postgresql@*'"
+	[ "$(db 'SELECT 1' || true)" = '1' ] ||
+		refuse "cannot connect to the vaultwarden database as the vaultwarden role." \
+			"Has the bootstrap created it? journalctl -b -u vaultwarden-bootstrap"
+
+	# Two pieces of evidence that an instance lived here, and either one is
+	# enough: the marker on the root disk, and the signing key on the data
+	# disk itself - so an old data disk under a fresh root disk is protected
+	# before anything has run on it.
+	if [ -f "${INITIALIZED}" ] || [ -f "${DATA_ROOT}/data/rsa_key.pem" ]; then
+		has_schema ||
+			refuse "this appliance was initialized before, but its database has no Vaultwarden schema." \
+				"Starting now would create an empty instance over the top of a lost one." \
+				"Restore it: vaultwarden-restore <backup>"
+		[ -f "${DATA_ROOT}/data/rsa_key.pem" ] ||
+			refuse "this appliance was initialized before, but ${DATA_ROOT}/data/rsa_key.pem is missing." \
+				"A new key would invalidate every session and is a sign the data directory was lost." \
+				"Restore it: vaultwarden-restore <backup>"
+	fi
+	echo "vaultwarden-guard: data disk ${actual} mounted, database reachable"
+}
+
+post_start() {
+	local code=''
+	# 50 x (3 s + 2 s) stays inside vaultwarden.service's TimeoutStartSec=300.
+	for _ in $(seq 1 50); do
+		code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' \
+			http://127.0.0.1:8000/alive 2>/dev/null || true)"
+		[ "${code}" = '200' ] && break
+		sleep 2
+	done
+	[ "${code}" = '200' ] || {
+		echo "vaultwarden-guard: Vaultwarden did not answer /alive (last: ${code:-000})" >&2
+		exit 1
+	}
+	if [ ! -f "${INITIALIZED}" ] && has_schema && [ -f "${DATA_ROOT}/data/rsa_key.pem" ]; then
+		install -d -m 0755 "${STATE_DIR}"
+		date -u '+%Y-%m-%dT%H:%M:%SZ' >"${INITIALIZED}"
+		echo "vaultwarden-guard: schema and signing key present; the data disk is now protected"
+	fi
+	echo "vaultwarden-guard: Vaultwarden is alive"
+}
+
+case "${1:-}" in
+pre-start) pre_start ;;
+post-start) post_start ;;
+*)
+	echo "usage: vaultwarden-guard pre-start|post-start" >&2
+	exit 2
+	;;
+esac

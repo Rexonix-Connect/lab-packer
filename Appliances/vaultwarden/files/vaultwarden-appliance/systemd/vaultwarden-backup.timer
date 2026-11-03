@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly Vaultwarden appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+
+[Timer]
+# Before a typical Veeam window, so the VM-level backup also carries a fresh
+# application-consistent dump on the data disk.
+OnCalendar=*-*-* 01:30:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
