@@ -1,0 +1,18 @@
+# vaultwarden-backup settings (/etc/default/vaultwarden-backup).
+
+# Days of backups to keep in /srv/vaultwarden/backups.
+RETENTION_DAYS=14
+
+# Stop Vaultwarden for the few seconds the dump and the archive take, so the
+# database and the attachment files are captured at the same instant. "no"
+# keeps it serving: pg_dump is still consistent on its own, but an attachment
+# uploaded mid-backup may then be in one half and not the other.
+QUIESCE=yes
+
+# A backup kept only on the disk it protects is not a backup. Set this to a
+# command that copies the finished backup off the appliance. It is run with the
+# backup files as arguments, and a non-zero exit fails the run - and with it
+# vaultwarden-backup.service, which is what monitoring should watch. Example,
+# with a wrapper script of your own that knows the destination:
+#   OFFSITE_COMMAND=/usr/local/sbin/ship-vaultwarden-backup
+OFFSITE_COMMAND=

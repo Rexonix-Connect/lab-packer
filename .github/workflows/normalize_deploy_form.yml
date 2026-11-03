@@ -16,6 +16,7 @@ on:
         options:
           - none
           - netbox
+          - vaultwarden
 
 permissions:
   contents: read

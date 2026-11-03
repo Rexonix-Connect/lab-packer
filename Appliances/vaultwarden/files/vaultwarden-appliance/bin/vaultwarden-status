@@ -1,0 +1,144 @@
+#!/bin/bash
+# One-screen health summary for the appliance. Also drives the MOTD, so it has
+# to stay quick, quiet and safe to run as any account. Exit status is non-zero
+# when something monitoring should alert on is wrong: not serving, a service
+# down, the data disk unmounted, the firewall inactive. Patch state and backup
+# age are reported loudly in the text but never change the exit status.
+set -uo pipefail
+
+STATE_DIR="${VAULTWARDEN_APPLIANCE_STATE_DIR:-/var/lib/vaultwarden-appliance}"
+STATE="${STATE_DIR}/state.json"
+DATA_ROOT="${VAULTWARDEN_DATA_ROOT:-/srv/vaultwarden}"
+UNITS=(vaultwarden nginx docker postgresql fail2ban)
+
+field() {
+	python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except Exception:
+    print("")' "${STATE}" "${1}" 2>/dev/null
+}
+
+if [ ! -f "${STATE_DIR}/bootstrapped" ]; then
+	if [ -f "${STATE_DIR}/failed" ]; then
+		echo "Vaultwarden appliance: BOOTSTRAP FAILED"
+		echo "  journalctl -u vaultwarden-bootstrap -b   (details in ${STATE_DIR}/failed)"
+		echo "  retry: systemctl start vaultwarden-bootstrap"
+	elif [ "$(systemctl is-system-running 2>/dev/null || true)" != 'initializing' ] &&
+		[ "$(systemctl is-system-running 2>/dev/null || true)" != 'starting' ] &&
+		[ "$(systemctl is-active vaultwarden-bootstrap 2>/dev/null || true)" = 'inactive' ]; then
+		echo "Vaultwarden appliance: BOOTSTRAP NEVER RAN"
+		echo "  Boot has finished but vaultwarden-bootstrap is inactive, so its start"
+		echo "  job was dropped rather than executed. Check for a dependency cycle:"
+		echo "    journalctl -b | grep -i 'ordering cycle'"
+	else
+		echo "Vaultwarden appliance: bootstrapping, not ready yet"
+		echo "  journalctl -u vaultwarden-bootstrap -bf"
+	fi
+	exit 1
+fi
+
+image="$(field image)"
+echo "Vaultwarden appliance ${image##*/}"
+echo "  URL       $(field url)"
+echo "  TLS       $(if [ "$(field self_signed_certificate)" = 'True' ]; then echo 'self-signed - Bitwarden apps will refuse it (vaultwarden-tls install <cert> <key>)'; else echo 'operator-supplied'; fi)"
+echo "  SMTP      $(if [ "$(field smtp)" = 'True' ]; then echo configured; else echo 'not configured - no invitation or verification mail'; fi)"
+echo "  SSO       $(if [ "$(field sso)" = 'True' ]; then echo 'OpenID Connect enabled'; else echo off; fi)"
+echo "  Orgs      may be created by: $(field org_creation_users)"
+echo "  Access    HTTPS from $(field https_allow); SSH from $(field ssh_allow); /admin from $(field admin_access)"
+# The HTTPS and SSH allowlists are ufw rules. ufw status needs root; for any
+# other account the firewall line is simply omitted rather than guessed at.
+if [ "$(id -u)" -eq 0 ] && ! ufw status 2>/dev/null | grep -q '^Status: active'; then
+	echo "  Firewall  ufw is NOT ACTIVE - the HTTPS and SSH allowlists are not enforced (ufw enable)"
+	unhealthy=1
+fi
+
+printf '  Services '
+unhealthy=0
+for unit in "${UNITS[@]}"; do
+	state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
+	printf '%s=%s ' "${unit}" "${state}"
+	[ "${state}" = 'active' ] || unhealthy=1
+done
+printf '\n'
+
+if ! findmnt --noheadings --mountpoint "${DATA_ROOT}" >/dev/null 2>&1; then
+	echo "  Data disk NOT MOUNTED - Vaultwarden will refuse to start (see vaultwarden-guard)"
+	unhealthy=1
+else
+	echo "  Data disk $(df -h --output=used,size,pcent "${DATA_ROOT}" | tail -n 1 | awk '{print $1 " of " $2 " used (" $3 ")"}')"
+	pcent="$(df --output=pcent "${DATA_ROOT}" | tail -n 1 | tr -dc '0-9')"
+	[ "${pcent:-0}" -ge 85 ] && echo "            ABOVE 85% - grow disk 2 in vCenter and reboot"
+fi
+
+# Unit states answer "did systemd start it"; this answers whether it serves,
+# end to end through nginx. Vaultwarden answers /alive only once it has
+# connected to its database.
+code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' https://127.0.0.1/alive 2>/dev/null || true)"
+if [ "${code}" != '200' ]; then
+	code="$(curl -sk --max-time 20 -o /dev/null -w '%{http_code}' https://127.0.0.1/alive 2>/dev/null || true)"
+fi
+if [ "${code}" = '200' ]; then
+	echo "  Serving   yes (/alive HTTP 200)"
+else
+	echo "  Serving   NO (/alive HTTP ${code:-000}) - journalctl -u vaultwarden -b"
+	unhealthy=1
+fi
+
+# Settings saved in the admin page are written to config.json, which then
+# overrides the deploy form for those keys, silently. Say so.
+if [ -r "${DATA_ROOT}/data" ] || [ "$(id -u)" -eq 0 ]; then
+	if [ -f "${DATA_ROOT}/data/config.json" ]; then
+		echo "  Config    ${DATA_ROOT}/data/config.json exists: admin-page settings override the deploy form"
+	fi
+fi
+
+# Patch state, read locally so the MOTD never blocks on the network. See the
+# NetBox appliance's netbox-status for why "last reached the archive" matters.
+now=$(date +%s)
+up=$(cut -d. -f1 /proc/uptime)
+stamp=/var/lib/apt/periodic/update-success-stamp
+if [ -f "${stamp}" ] && [ $(( now - $(date -r "${stamp}" +%s) )) -le $(( 2 * 86400 )) ]; then
+	reach="archive reachable"
+elif [ "${up}" -lt 86400 ]; then
+	reach="first check since deploy still pending"
+elif [ -f "${stamp}" ]; then
+	reach="LAST REACHED THE ARCHIVE $(( ( now - $(date -r "${stamp}" +%s) ) / 86400 )) DAYS AGO - check egress/proxy"
+else
+	reach="NEVER REACHED THE ARCHIVE - check egress/proxy"
+fi
+security=''
+if [ -x /usr/lib/update-notifier/apt-check ]; then
+	counts="$(/usr/lib/update-notifier/apt-check 2>&1 || true)"
+	case "${counts}" in *';'*) security="${counts#*;}" ;; esac
+fi
+if [ -n "${security}" ] && [ "${security}" != '0' ]; then
+	echo "  Updates   ${security} security update(s) pending (${reach})"
+else
+	echo "  Updates   none pending (${reach})"
+fi
+[ -f /var/run/reboot-required ] && echo "  Reboot    REQUIRED to finish applying updates"
+
+if [ -r "${DATA_ROOT}/backups" ] || [ "$(id -u)" -eq 0 ]; then
+	latest="$(ls -1t "${DATA_ROOT}"/backups/vaultwarden-*.dump 2>/dev/null | head -n 1 || true)"
+	if [ -n "${latest}" ]; then
+		age=$(( (now - $(date -r "${latest}" +%s)) / 3600 ))
+		line="$(basename "${latest}") (${age}h ago)"
+		[ "${age}" -gt 36 ] && line="${line} - OLDER THAN 36 HOURS"
+		echo "  Backup    ${line}"
+	else
+		echo "  Backup    none yet (nightly timer: $(systemctl is-active vaultwarden-backup.timer 2>/dev/null || echo unknown))"
+	fi
+	if [ "$(systemctl show vaultwarden-backup.service -p Result --value 2>/dev/null)" != 'success' ] &&
+		[ -n "${latest}" ]; then
+		echo "            LAST RUN FAILED - journalctl -u vaultwarden-backup"
+	fi
+else
+	echo "  Backup    not visible to this account - sudo vaultwarden-status"
+fi
+
+if [ "$(id -u)" -eq 0 ] && [ -f /root/vaultwarden-credentials.txt ]; then
+	echo "  Login     generated admin token in /root/vaultwarden-credentials.txt (vaultwarden-credentials)"
+fi
+
+exit "${unhealthy}"

@@ -1,0 +1,36 @@
+# fail2ban for the Vaultwarden appliance.
+#
+# Vaultwarden rate-limits logins and the admin page itself; fail2ban adds the
+# part a rate limit cannot - keeping a persistent guesser out for an hour. Both
+# Vaultwarden jails read the vaultwarden.service journal, where the container's
+# output lands (it runs in the foreground of that unit).
+
+[DEFAULT]
+# ufw owns the firewall in this image, as on the NetBox appliance.
+banaction = ufw
+banaction_allports = ufw
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+# Ubuntu 24.04 has no rsyslog by default, so sshd only logs to the journal.
+backend = systemd
+
+[vaultwarden]
+enabled = true
+filter = vaultwarden
+backend = systemd
+port = http,https
+# Higher than SSH: a whole office behind one NAT address mistyping master
+# passwords is ordinary, and locking it out is not the goal.
+maxretry = 10
+
+[vaultwarden-admin]
+enabled = true
+filter = vaultwarden-admin
+backend = systemd
+port = http,https
+maxretry = 3
+bantime = 6h

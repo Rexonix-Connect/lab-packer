@@ -105,4 +105,27 @@ runs:
         section 'nginx error log'
         tail -n 50 /var/log/nginx/netbox-error.log /var/log/nginx/error.log 2>&1
         endsection
+
+        # The Vaultwarden appliance: its bootstrap traceback, the guard's
+        # verdict on the data disk, and the container's own output.
+        if [ -d /var/lib/vaultwarden-appliance ]; then
+          section 'vaultwarden bootstrap traceback and state'
+          cat /var/lib/vaultwarden-appliance/failed 2>&1
+          /usr/local/sbin/vaultwarden-status
+          /usr/local/sbin/vaultwarden-guard pre-start
+          ls -la /etc/vaultwarden /etc/vaultwarden/tls /var/lib/vaultwarden-appliance 2>&1
+          endsection
+
+          section 'vaultwarden units and journal'
+          systemctl --no-pager --full status vaultwarden-bootstrap vaultwarden-reconcile             vaultwarden-datadisk vaultwarden docker nginx 'postgresql@*' 2>&1 | head -n 200
+          journalctl --no-pager -b -u vaultwarden-bootstrap -u vaultwarden-reconcile             -u vaultwarden -u docker | tail -n 300
+          endsection
+
+          section 'vaultwarden storage and nginx'
+          findmnt /srv/vaultwarden
+          grep -n 'srv/vaultwarden' /etc/fstab
+          docker ps -a
+          tail -n 50 /var/log/nginx/vaultwarden-error.log 2>&1
+          endsection
+        fi
         REMOTE

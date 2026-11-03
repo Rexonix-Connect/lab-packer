@@ -1,0 +1,21 @@
+[Unit]
+Description=Vaultwarden appliance first-boot bootstrap
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# Never order this after a late cloud-init unit (cloud-final.service in
+# particular): it is pulled into multi-user.target, cloud-final is ordered
+# after that target, and systemd breaks the resulting cycle by silently
+# deleting jobs. See netbox-bootstrap.service for how that played out.
+After=ovf-settings.service network-online.target postgresql.service ufw.service vaultwarden-datadisk.service
+Wants=network-online.target
+RequiresMountsFor=/srv/vaultwarden
+Before=vaultwarden.service nginx.service
+ConditionPathExists=!/var/lib/vaultwarden-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vaultwarden-firstboot.py
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,251 @@
+name: Test Vaultwarden Appliance
+
+# Deploys the template with an empty form and checks what an appliance has to
+# do unaided: generate its own identity, serve the web vault over HTTPS, keep
+# registration closed, gate /admin, expose nothing but 22/80/443, and come back
+# from a reboot with the same database and signing key. The shared VM
+# lifecycle is in the composite actions under .github/actions/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: Minutes to keep the test VM running before deletion (0 deletes immediately)
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        description: How long to wait for VMware Tools to report an IP address (for example 15m)
+        type: string
+        required: false
+        default: 15m
+      vaultwarden_http_check:
+        description: Check the appliance over HTTPS from the runner (needs a route to the VM network)
+        type: boolean
+        required: false
+        default: true
+      vaultwarden_timeout_minutes:
+        description: Minutes to wait for the appliance to finish its first-boot bootstrap
+        type: number
+        required: false
+        default: 15
+      collect_diagnostics:
+        description: Seed a login on the guest, check it booted cleanly, run the on-guest checks, and dump its state on failure
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        description: Delete the test VM even when the test fails (failures otherwise keep it for inspection)
+        type: boolean
+        required: false
+        default: false
+
+  workflow_call:
+    inputs:
+      keep_minutes:
+        type: number
+        required: false
+        default: 0
+      ip_timeout:
+        type: string
+        required: false
+        default: 15m
+      vaultwarden_http_check:
+        type: boolean
+        required: false
+        default: true
+      vaultwarden_timeout_minutes:
+        type: number
+        required: false
+        default: 15
+      collect_diagnostics:
+        type: boolean
+        required: false
+        default: true
+      destroy_on_failure:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ vars.RUNNER_LABELS }}
+    timeout-minutes: 90
+    name: Test vaultwarden-appliance
+    env:
+      GOVC_URL: ${{ secrets.VCENTER_HOST }}
+      GOVC_USERNAME: ${{ secrets.VCENTER_USER }}
+      GOVC_PASSWORD: ${{ secrets.VCENTER_PASS }}
+      GOVC_INSECURE: ${{ secrets.VCENTER_INSECURE_CONNECTION }}
+      GOVC_DATACENTER: ${{ vars.VCENTER_DATACENTER_NAME }}
+      GOVC_DATASTORE: ${{ vars.VCENTER_DATASTORE_NAME }}
+      GOVC_RESOURCE_POOL: /${{ vars.VCENTER_DATACENTER_NAME }}/host/${{ vars.VCENTER_CLUSTER_NAME }}/Resources
+      TEMPLATE_NAME: ${{ vars.VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+      VM_NAME: testvm-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy and power on
+        id: deploy
+        uses: ./.github/actions/deploy-test-vm
+        with:
+          template_name: ${{ vars.VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME }}
+          library_name: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
+          vm_name: ${{ env.VM_NAME }}
+          family: linux
+          ip_timeout: ${{ inputs.ip_timeout }}
+          seed_diagnostics: ${{ inputs.collect_diagnostics }}
+          diag_key: ${{ runner.temp }}/testvm-diag-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # First, as in the NetBox test: a guest whose jobs were dropped or whose
+      # cloud-init never finished otherwise fails below as a bare timeout.
+      - name: Verify the guest booted cleanly
+        if: ${{ inputs.collect_diagnostics }}
+        uses: ./.github/actions/verify-guest-boot
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          diag_key: ${{ runner.temp }}/testvm-diag-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+          cloud_init_timeout_minutes: ${{ inputs.vaultwarden_timeout_minutes }}
+
+      - name: Verify the vApp deploy form schema
+        run: |
+          props="$(govc object.collect -json "vm/${VM_NAME}" config.vAppConfig | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          val = data[0].get("val") if data else None
+          print("\n".join(sorted(p.get("id", "") for p in (val or {}).get("property", []))))')"
+          expected="$(python3 -c '
+          import json
+          base = ["hostname", "username", "public-keys", "password", "user-data",
+                  "network.ip4", "network.gw4", "network.ip6", "network.gw6",
+                  "network.dns", "network.domain"]
+          extra = [d["id"] for d in json.load(open("shared/vapp-descriptors/vaultwarden.json"))["descriptors"]]
+          print("\n".join(base + extra))')"
+          missing=0
+          for key in ${expected}; do
+            if ! grep -qx "${key}" <<<"${props}"; then
+              echo "Missing vApp property: ${key}"
+              missing=1
+            fi
+          done
+          [ "${missing}" -eq 0 ] || exit 1
+          echo "All $(wc -l <<<"${expected}") deploy form properties are present."
+
+      - name: Verify the appliance data disk
+        run: |
+          govc device.info -vm "${VM_NAME}" -json 'disk-*' | python3 -c '
+          import json, sys
+          disks = sorted(
+              (d["capacityInKB"] // (1024 * 1024), d["deviceInfo"]["label"])
+              for d in json.load(sys.stdin)["devices"])
+          for size, label in disks:
+              print("%s: %d GB" % (label, size))
+          if len(disks) != 2:
+              sys.exit("expected 2 disks (root + data disk), found %d" % len(disks))
+          print("Root and data disks both present.")'
+
+      - name: Verify Vaultwarden is serving
+        if: ${{ inputs.vaultwarden_http_check }}
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.vaultwarden_timeout_minutes }}
+        run: |
+          echo "Waiting up to ${TIMEOUT_MINUTES} minutes for https://${GUEST_IP}/alive ..."
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          code=''
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/alive" || true)"
+            [ "${code}" = '200' ] && break
+            sleep 15
+          done
+          [ "${code}" = '200' ] || { echo "/alive never answered 200 (last: ${code:-none})"; exit 1; }
+          echo "/alive: 200"
+
+          web="$(curl -sk --max-time 10 "https://${GUEST_IP}/" || true)"
+          grep -qi '<html' <<<"${web}" || { echo "The web vault was not served"; exit 1; }
+          echo "Web vault: served"
+
+          curl -sk --max-time 10 "https://${GUEST_IP}/api/config" | python3 -c 'import json, sys; json.load(sys.stdin)'
+          # Functional, not the /api/config flag, which is false by design
+          # when invitations are on and mail is off: the server must refuse
+          # an address nobody invited.
+          register="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"nobody@test.invalid","name":"probe"}' \
+            "https://${GUEST_IP}/identity/accounts/register/send-verification-email" || true)"
+          [ "${register}" = '400' ] || { echo "Registration for an un-invited address answered ${register}, expected 400"; exit 1; }
+          echo "Registration: refused for an un-invited address"
+
+          redirect="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://${GUEST_IP}/" || true)"
+          [ "${redirect}" = '301' ] || { echo "Plain HTTP returned ${redirect}, expected 301"; exit 1; }
+          echo "HTTP redirect: 301"
+
+          admin="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://${GUEST_IP}/admin" || true)"
+          [ "${admin}" = '403' ] || { echo "/admin returned ${admin}; it must be denied when no allowlist was deployed"; exit 1; }
+          echo "Admin page: denied from the network by default"
+
+          # Nothing but the web ports and SSH may answer from outside.
+          for port in 5432 8000 2375 2376 3012; do
+            if timeout 5 bash -c "exec 3<>/dev/tcp/${GUEST_IP}/${port}" 2>/dev/null; then
+              echo "Port ${port} is reachable from the network; it must not be"
+              exit 1
+            fi
+          done
+          echo "Ports 5432, 8000, 2375, 2376, 3012: not reachable"
+
+          echo "Certificate generated at first boot:"
+          openssl s_client -connect "${GUEST_IP}:443" </dev/null 2>/dev/null |
+            openssl x509 -noout -subject -dates -ext subjectAltName
+
+      # Restart survival needs a login on the guest, so it runs with the
+      # diagnostics seeding on.
+      - name: Verify on the guest, then across a reboot
+        if: ${{ inputs.collect_diagnostics }}
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.vaultwarden_timeout_minutes }}
+          # runner.* is not available in job-level env, hence here.
+          DIAG_KEY: ${{ runner.temp }}/testvm-diag-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          ssh_opts="-i ${DIAG_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=5 -o BatchMode=yes"
+          guest() { ssh ${ssh_opts} "diag@${GUEST_IP}" "sudo -n bash -c '$1'"; }
+
+          guest 'vaultwarden-status'
+          guest 'test -f /var/lib/vaultwarden-appliance/initialized'
+          guest 'test -f /root/vaultwarden-credentials.txt'
+          before="$(guest 'cat /etc/vaultwarden/volume-id; sha256sum /srv/vaultwarden/data/rsa_key.pem')"
+          guest 'grep -qE "^(ADMIN_TOKEN|SMTP_PASSWORD)=" /etc/vaultwarden/vaultwarden.env && exit 1 || true'
+          guest 'ufw status | grep -q "80,443/tcp.*ALLOW"'
+
+          echo "Rebooting the guest ..."
+          guest 'systemctl reboot' || true
+          sleep 30
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          until guest 'curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://127.0.0.1/alive | grep -qx 200' 2>/dev/null; do
+            [ "$(date +%s)" -lt "${deadline}" ] || { echo "Vaultwarden did not come back after a reboot"; exit 1; }
+            sleep 15
+          done
+          after="$(guest 'cat /etc/vaultwarden/volume-id; sha256sum /srv/vaultwarden/data/rsa_key.pem')"
+          [ "${before}" = "${after}" ] || { echo "The volume id or RSA key changed across a reboot"; echo "${before}"; echo "${after}"; exit 1; }
+          guest 'vaultwarden-status'
+          echo "Survived a reboot with the same data disk and signing key."
+
+      - name: Collect guest diagnostics
+        if: ${{ failure() && inputs.collect_diagnostics }}
+        uses: ./.github/actions/collect-vm-diagnostics
+        with:
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          vm_name: ${{ env.VM_NAME }}
+          diag_key: ${{ runner.temp }}/testvm-diag-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Clean up
+        if: always()
+        uses: ./.github/actions/cleanup-test-vm
+        with:
+          vm_name: ${{ env.VM_NAME }}
+          guest_ip: ${{ steps.deploy.outputs.guest_ip }}
+          keep_minutes: ${{ inputs.keep_minutes }}
+          destroy_on_failure: ${{ inputs.destroy_on_failure }}
+          diag_key: ${{ runner.temp }}/testvm-diag-vaultwarden-appliance-${{ github.run_id }}-${{ github.run_attempt }}
+          job_status: ${{ job.status }}

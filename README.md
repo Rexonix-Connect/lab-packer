@@ -189,7 +189,7 @@ Reruns the post-build deploy-form normalization (`shared/scripts/normalize-libra
 #### Workflow inputs
 
 - `template_name` - the content library item to normalize; required
-- `extra_descriptors` - the deploy-form extension the item was built with, for application-layer images: `none` (default, the eleven shared properties) or `netbox`. Getting this wrong is not silent — the normalizer refuses to run when it cannot find every property it expects.
+- `extra_descriptors` - the deploy-form extension the item was built with, for application-layer images: `none` (default, the eleven shared properties), `netbox` or `vaultwarden`. Getting this wrong is not silent — the normalizer refuses to run when it cannot find every property it expects.
 
 ### Build Windows Server 2019 / 2022 VM Templates
 
@@ -316,6 +316,25 @@ The filesystem is ext4 made on the **whole device, with no partition table**, an
 
 Requirements: the same vCenter variables and secrets as the other builds, plus `NETBOX_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the **source** it clones. No ISO path, no `PACKER_VM_PASSWORD` and no `RECOVERY_PASSWORD` are needed — this build introduces no new secrets.
 
+### Build Vaultwarden Appliance VM Template
+
+[![Build Vaultwarden Appliance VM Template](../../actions/workflows/build_vaultwarden_appliance_vm_template.yml/badge.svg)](../../actions/workflows/build_vaultwarden_appliance_vm_template.yml)
+
+A [Vaultwarden](https://github.com/dani-garcia/vaultwarden) password manager appliance (`Appliances/vaultwarden/`), built exactly like the NetBox appliance: `vsphere-clone` from the hardened 24.04 library item, a throwaway build account, a second data disk attached through the vCenter API, a deploy form, a first-boot bootstrap and a build that refuses to export a template that does not work. **The operator handbook - architecture, first setup, security model, backup and Veeam, disaster recovery, upgrades and the test plan - is [`Appliances/vaultwarden/README.md`](Appliances/vaultwarden/README.md).**
+
+In short: PostgreSQL 16 and nginx run as native Ubuntu packages (patched by `unattended-upgrades`); only Vaultwarden runs in Docker, from the official image pinned by digest and shipped inside the template, on the host network bound to `127.0.0.1`. Docker's iptables management is off and there is no bridge, so it cannot open anything around ufw. Vaultwarden reaches PostgreSQL over its Unix socket with peer authentication, so there is no database password at all, and every other secret is a root-only file read through Vaultwarden's `*_FILE` settings rather than an environment variable. Everything lives on `/srv/vaultwarden` (disk 2), and `vaultwarden-guard` refuses to start Vaultwarden on a missing, blank or foreign data disk rather than let it initialize an empty instance.
+
+#### Workflow inputs
+
+- `vaultwarden_version` / `vaultwarden_image_digest` - release and image digest to ship, moved together; default `1.37.5` and its index digest. `latest` is rejected
+- `cpu_count` / `memory_mb` - default `2` vCPU and `8192` MB
+- `data_disk_gb` - size of `/srv/vaultwarden`, minimum `20`, default `100`
+- `firmware`, `ssh_timeout` - as for the NetBox appliance
+
+The workflow runs a `check` job first that needs no vCenter (bootstrap and guard tests, `bash -n`, the composed deploy form, `packer fmt` and `packer validate`), and the build only after it passes. **Test Vaultwarden Appliance** deploys it with an empty form and checks it serves, keeps registration closed, gates `/admin`, exposes nothing but 22/80/443, and survives a reboot with the same database and signing key.
+
+Requirements: the same vCenter variables and secrets as the other builds, plus `VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME` for the output template name and `UBUNTU_24_04_SERVER_HARDENED_X64_VM_TEMPLATE_NAME` for the source. No new secrets.
+
 ## Deploying the templates
 
 ### vApp deploy form (vSphere)
@@ -398,7 +417,7 @@ Four things bite, roughly in this order:
 - **Clock skew fails the login, not the command you were running.** vSphere SSO tokens carry a ±10 minute tolerance, and beyond it every call fails with an STS lifetime error. Compare `(Get-View ServiceInstance).CurrentTime()` with `[DateTime]::UtcNow`, fix NTP (vCenter's VAMI on port 5480, or the ESXi host if it syncs from there), and start a **fresh** PowerShell — a connection that failed this way stays poisoned for the rest of the session and reports "failed during a previous operation" from then on.
 - **Take every file.** An export is the `.ovf` descriptor, one `.vmdk` per disk and the `.nvram` that holds the EFI variables, plus a `.mf` only when the source item had one. The disks are compressed on the way out, so they will not match the datastore sizes; what must match is the descriptor's own accounting — `([xml](Get-Content NAME.ovf)).Envelope.References.File` lists an `ovf:size` per file to compare against `(Get-Item $_.href).Length`.
 - **Hardware version**, above. The import succeeds regardless; it is creating a VM from the imported item that fails.
-- **The deploy form travels with the descriptor.** Before trusting the item, confirm it still declares every property: `([xml](Get-Content NAME.ovf)).Envelope.VirtualSystem.ProductSection.Property.key` — 11 for a base template, 27 for the NetBox appliance.
+- **The deploy form travels with the descriptor.** Before trusting the item, confirm it still declares every property: `([xml](Get-Content NAME.ovf)).Envelope.VirtualSystem.ProductSection.Property.key` — 11 for a base template, 27 for the NetBox appliance, 34 for the Vaultwarden appliance.
 
 ### Non-VMware platforms
 

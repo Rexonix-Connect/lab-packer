@@ -1,0 +1,61 @@
+# Vaultwarden appliance Compose project (/etc/vaultwarden/compose.yaml).
+#
+# Static. What varies lives beside it: .env holds the pinned image and the uid
+# to run as (written at build time, rewritten by vaultwarden-upgrade), and
+# vaultwarden.env holds the settings (written from the deploy form by
+# vaultwarden-firstboot.py). Secrets are files under secrets/, read through
+# Vaultwarden's <KEY>_FILE support, so none of them is ever in the container
+# environment where `docker inspect` would show it.
+#
+# Run only by vaultwarden.service. A `docker compose up -d` by hand would skip
+# vaultwarden-guard, which is what refuses to start on a missing data disk.
+name: vaultwarden
+
+services:
+  vaultwarden:
+    image: ${VAULTWARDEN_IMAGE:?set in /etc/vaultwarden/.env}
+    container_name: vaultwarden
+    # The image ships in the template. A deployment never pulls, so an
+    # air-gapped site works and nothing changes underneath a running service;
+    # vaultwarden-upgrade pulls explicitly, by digest.
+    pull_policy: never
+    # systemd owns the lifecycle (Restart=always on vaultwarden.service). A
+    # Docker restart policy would let dockerd start the container at boot on
+    # its own, ahead of the data-disk guard.
+    restart: "no"
+    user: "${VAULTWARDEN_UID:?}:${VAULTWARDEN_GID:?}"
+    # Host networking, bound to 127.0.0.1:8000 by ROCKET_ADDRESS: nothing is
+    # published, so Docker has no port to forward around ufw, and with its
+    # iptables management switched off it could not anyway. nginx on the host
+    # is the only way in.
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    env_file:
+      - /etc/vaultwarden/vaultwarden.env
+    volumes:
+      # create_host_path: false - a missing directory is an error, never a
+      # fresh empty one.
+      - type: bind
+        source: /srv/vaultwarden/data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/postgresql
+        target: /run/postgresql
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/vaultwarden/secrets
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+    stop_grace_period: 30s

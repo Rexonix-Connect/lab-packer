@@ -1,0 +1,166 @@
+{
+  "insert_before": "user-data",
+  "descriptors": [
+    {
+      "id": "vaultwarden.fqdn",
+      "category": "Vaultwarden Application",
+      "label": "Public FQDN",
+      "description": "Name users reach Vaultwarden by, for example vault.example.com; becomes DOMAIN, the nginx server name and the certificate name. It is also the WebAuthn/FIDO2 identity, so changing it later invalidates registered security keys. Empty derives it from the guest hostname and network.domain",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.time-zone",
+      "category": "Vaultwarden Application",
+      "label": "Time Zone",
+      "description": "IANA time zone for Vaultwarden, for example Europe/Prague; empty means UTC",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.org-creators",
+      "category": "Vaultwarden Application",
+      "label": "Organization Creators",
+      "description": "Comma-separated email addresses of the accounts allowed to create organizations. Empty means nobody can: set it to the first administrator's address for the initial bootstrap",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.admin-allow",
+      "category": "Vaultwarden Application",
+      "label": "Admin Page Allowlist",
+      "description": "Space or comma separated addresses/CIDRs (management or VPN networks) allowed to reach /admin. Empty allows loopback only, i.e. an SSH tunnel. The admin token is required on top of this",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.admin-token-hash",
+      "category": "Vaultwarden Application",
+      "label": "Admin Token Hash (argon2id)",
+      "description": "Optional argon2id PHC hash ($argon2id$v=19$...) of an admin token you hold, from 'vaultwarden-admin-token hash'. Empty (recommended) generates a token and shows it on the VM console once. Never put a plaintext token here",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.https-allow",
+      "category": "Vaultwarden Network",
+      "label": "HTTPS Allowlist",
+      "description": "Space or comma separated addresses/CIDRs allowed to reach HTTPS (and the HTTP redirect) through the guest firewall, for example the office and VPN ranges. Empty allows any source",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.ssh-allow",
+      "category": "Vaultwarden Network",
+      "label": "SSH Allowlist",
+      "description": "Space or comma separated management addresses/CIDRs allowed to SSH in. Empty keeps the base image's rule (any source). A wrong value locks SSH out; the console recovery account still works",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.proxy",
+      "category": "Vaultwarden Network",
+      "label": "HTTP(S) Proxy",
+      "description": "Unauthenticated proxy (http://host:port, no user:password - a credential here would be readable by every local account) for the appliance's own outbound traffic: Ubuntu updates, image pulls for upgrades, website icons, push notifications and the OpenID Connect provider. Empty means connect directly",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.no-proxy",
+      "category": "Vaultwarden Network",
+      "label": "Proxy Bypass List",
+      "description": "Comma-separated hosts, domains and CIDRs reached without the proxy. localhost is always bypassed",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.tls-cert",
+      "category": "Vaultwarden TLS",
+      "label": "TLS Certificate Chain (base64 PEM)",
+      "description": "Base64-encoded PEM chain, leaf first, from a public or company CA the clients trust. Bitwarden mobile and desktop apps refuse self-signed certificates, so this is needed for real use. Empty generates a self-signed certificate",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.tls-key",
+      "category": "Vaultwarden TLS",
+      "label": "TLS Private Key (base64 PEM)",
+      "description": "Base64-encoded PEM private key matching the certificate above. Stored in the VM configuration in cleartext: prefer 'vaultwarden-tls install' after deployment, or clear this field once the VM has booted",
+      "type": "password"
+    },
+    {
+      "id": "vaultwarden.smtp-host",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Server",
+      "description": "Mail relay for invitations, email verification and new-device notices. Empty leaves mail off: invited users can still register, but nothing is emailed and email verification is not enforced",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.smtp-port",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Port",
+      "description": "Empty uses the port matching the security mode: 587 for starttls, 465 for force_tls, 25 for off",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.smtp-security",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Security",
+      "description": "starttls (default), force_tls or off",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.smtp-from",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Sender Address",
+      "description": "From address, for example vaultwarden@example.com; required when an SMTP server is set",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.smtp-username",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Username",
+      "description": "Empty for an unauthenticated relay",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.smtp-password",
+      "category": "Vaultwarden Mail",
+      "label": "SMTP Password",
+      "description": "Stored on the appliance as a root-only file, never in the container environment. Clearing this field later keeps the stored password; vApp values are readable by vCenter users with access to the VM, so clear it once the VM has booted",
+      "type": "password"
+    },
+    {
+      "id": "vaultwarden.sso-authority",
+      "category": "Vaultwarden SSO",
+      "label": "OpenID Connect Authority",
+      "description": "Optional, off by default. Issuer URL of a Keycloak realm or Microsoft Entra ID tenant, for example https://login.microsoftonline.com/<tenant>/v2.0. Users still need their master password to unlock their vault",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.sso-client-id",
+      "category": "Vaultwarden SSO",
+      "label": "OpenID Connect Client ID",
+      "description": "Client id registered at the identity provider; SSO is enabled only when this and the authority are both set",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.sso-client-secret",
+      "category": "Vaultwarden SSO",
+      "label": "OpenID Connect Client Secret",
+      "description": "Required for SSO (Vaultwarden refuses to start with SSO enabled and no secret, so SSO stays off until all three are set). Stored on the appliance as a root-only file; clearing this field later keeps the stored secret",
+      "type": "password"
+    },
+    {
+      "id": "vaultwarden.sso-scopes",
+      "category": "Vaultwarden SSO",
+      "label": "OpenID Connect Scopes",
+      "description": "Space-separated scopes requested from the provider; empty means 'openid profile email offline_access'. offline_access is what makes the provider return a refresh token; without it an SSO session ends with the access token",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.sso-signups-allowed",
+      "category": "Vaultwarden SSO",
+      "label": "SSO Creates Accounts",
+      "description": "true lets a first SSO login create a Vaultwarden account for anyone the provider authenticates (control who that is at the provider, e.g. Entra ID 'assignment required'). Empty or false means an SSO login only works for an address that was invited first",
+      "type": "string"
+    },
+    {
+      "id": "vaultwarden.sso-allow-unknown-email-verification",
+      "category": "Vaultwarden SSO",
+      "label": "Accept Unknown Email Verification",
+      "description": "Set to true for Microsoft Entra ID, which sends no email_verified claim: without it Vaultwarden refuses every SSO login. Only safe with a provider where users cannot set their own email address, because an SSO login is linked to the existing local account with the same address",
+      "type": "string"
+    }
+  ]
+}

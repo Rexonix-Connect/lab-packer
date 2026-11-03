@@ -1,0 +1,11 @@
+[Unit]
+Description=Vaultwarden appliance backup
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+After=postgresql.service vaultwarden.service
+RequiresMountsFor=/srv/vaultwarden
+ConditionPathExists=/var/lib/vaultwarden-appliance/bootstrapped
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vaultwarden-backup
+TimeoutStartSec=3600
