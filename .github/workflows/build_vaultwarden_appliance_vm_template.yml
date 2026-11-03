@@ -154,6 +154,21 @@ jobs:
           print('deploy form: %d properties' % len(ids))
           PY
 
+      # packer validate reads ssh_private_key_file and parses it as a key, so
+      # a placeholder path is not enough: /dev/null fails with "no key found".
+      # The pair exists for this job only and is never authorized anywhere.
+      - name: Generate a throwaway SSH key for validation
+        id: checkkey
+        shell: bash
+        run: |
+          install -d -m 700 "${RUNNER_TEMP}/vaultwarden-check"
+          rm -f "${RUNNER_TEMP}/vaultwarden-check/id_ed25519" "${RUNNER_TEMP}/vaultwarden-check/id_ed25519.pub"
+          ssh-keygen -q -t ed25519 -N '' -C packer-vaultwarden-validate -f "${RUNNER_TEMP}/vaultwarden-check/id_ed25519"
+          {
+            echo "public_key=$(cat "${RUNNER_TEMP}/vaultwarden-check/id_ed25519.pub")"
+            echo "private_key_file=${RUNNER_TEMP}/vaultwarden-check/id_ed25519"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Packer fmt and validate
         env:
           # validate needs every variable set; none of these are used.
@@ -169,8 +184,8 @@ jobs:
           PKR_VAR_portGroup: validate
           PKR_VAR_vmName: validate
           PKR_VAR_vmFolder: /
-          PKR_VAR_buildPublicKey: ssh-ed25519 AAAA validate
-          PKR_VAR_buildPrivateKeyFile: /dev/null
+          PKR_VAR_buildPublicKey: ${{ steps.checkkey.outputs.public_key }}
+          PKR_VAR_buildPrivateKeyFile: ${{ steps.checkkey.outputs.private_key_file }}
           PKR_VAR_vaultwardenVersion: ${{ inputs.vaultwarden_version }}
           PKR_VAR_vaultwardenImageDigest: ${{ inputs.vaultwarden_image_digest }}
         run: |
@@ -178,6 +193,12 @@ jobs:
           packer fmt -check ./Appliances/vaultwarden
           cd Appliances/vaultwarden
           packer validate -only='vsphere-clone.base' .
+
+      - name: Remove the throwaway SSH key
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "${RUNNER_TEMP}/vaultwarden-check"
 
   packer:
     needs: check
