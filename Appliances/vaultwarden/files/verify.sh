@@ -70,7 +70,9 @@ alive 60 || fail 'Vaultwarden did not answer /alive through nginx'
 echo '> /alive answered through nginx.'
 
 echo '> Verifying what is served ...'
-reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk '{print $2}' || true)"
+# --version prints two lines, the server and the bundled web-vault; the first
+# is the one pinned here.
+reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk 'NR==1{print $2}' || true)"
 [ "${reported}" = "${VAULTWARDEN_VERSION}" ] ||
 	fail "the container reports Vaultwarden ${reported:-?}, expected ${VAULTWARDEN_VERSION}"
 echo "> Vaultwarden ${reported}"
