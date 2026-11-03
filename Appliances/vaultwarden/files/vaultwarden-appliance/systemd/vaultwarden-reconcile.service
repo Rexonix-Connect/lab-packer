@@ -9,7 +9,9 @@ Documentation=https://github.com/Rexonix-Connect/lab-packer
 After=ovf-settings.service network-online.target postgresql.service ufw.service vaultwarden-datadisk.service vaultwarden-bootstrap.service
 Wants=network-online.target
 RequiresMountsFor=/srv/vaultwarden
-Before=vaultwarden.service nginx.service
+# Before docker too, so a proxy change made in vCenter reaches dockerd on the
+# next boot rather than the one after.
+Before=vaultwarden.service nginx.service docker.service
 ConditionPathExists=/var/lib/vaultwarden-appliance/bootstrapped
 
 [Service]

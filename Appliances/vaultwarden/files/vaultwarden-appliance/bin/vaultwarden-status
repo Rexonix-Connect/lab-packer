@@ -46,6 +46,14 @@ echo "  SMTP      $(if [ "$(field smtp)" = 'True' ]; then echo configured; else 
 echo "  SSO       $(if [ "$(field sso)" = 'True' ]; then echo 'OpenID Connect enabled'; else echo off; fi)"
 echo "  Orgs      may be created by: $(field org_creation_users)"
 echo "  Access    HTTPS from $(field https_allow); SSH from $(field ssh_allow); /admin from $(field admin_access)"
+# A filled-in HTTPS allowlist with nothing valid in it installs no HTTPS rule
+# at all - closed, not open - and that is worth a line of its own.
+case "$(field https_allow)" in
+CLOSED*)
+	echo "            HTTPS IS UNREACHABLE: fix vaultwarden.https-allow in vCenter and power-cycle"
+	unhealthy=1
+	;;
+esac
 # The HTTPS and SSH allowlists are ufw rules. ufw status needs root; for any
 # other account the firewall line is simply omitted rather than guessed at.
 if [ "$(id -u)" -eq 0 ] && ! ufw status 2>/dev/null | grep -q '^Status: active'; then

@@ -54,7 +54,10 @@ source "vsphere-clone" "base" {
   ssh_timeout          = var.sshTimeout
   ip_wait_timeout      = var.ipWaitTimeout
 
-  shutdown_command = "sudo -n -E /tmp/packer-finalize-template.sh"
+  # The provisioners' environment_vars do not reach this separate session, so
+  # the account to delete is passed explicitly; finalize.sh also falls back
+  # to SUDO_USER, which is that account whichever name it was given.
+  shutdown_command = "sudo -n env BUILD_USERNAME=${var.buildUsername} /tmp/packer-finalize-template.sh"
   shutdown_timeout = "20m"
 
   configuration_parameters = {

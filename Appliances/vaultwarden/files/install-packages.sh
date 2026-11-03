@@ -21,6 +21,31 @@ apt-get "${APT_OPTS[@]}" update
 echo '> Applying pending security updates ...'
 apt-get "${APT_OPTS[@]}" upgrade --yes
 
+echo '> Configuring the Docker daemon before it is installed ...'
+# The package starts dockerd as soon as it is installed, and a daemon started
+# with the defaults creates docker0, the DOCKER iptables chains and turns on
+# ip_forward - state a later restart with a restrictive configuration does not
+# undo. So the configuration goes in first, and the daemon's very first start
+# is already the locked-down one. What it says, and why, is in
+# install-docker.sh, which asserts it took effect.
+install -d -m 0755 /etc/docker
+cat >/etc/docker/daemon.json <<'EOF'
+{
+  "iptables": false,
+  "ip6tables": false,
+  "bridge": "none",
+  "ip-forward": false,
+  "no-new-privileges": true,
+  "live-restore": false,
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  }
+}
+EOF
+chmod 0644 /etc/docker/daemon.json
+
 echo '> Installing appliance packages ...'
 # argon2 hashes the Vaultwarden admin token at first boot.
 apt-get "${APT_OPTS[@]}" install --yes --no-install-recommends \

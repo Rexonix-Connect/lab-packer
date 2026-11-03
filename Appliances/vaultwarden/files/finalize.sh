@@ -86,7 +86,15 @@ fi
 rm -f /etc/ssh/ssh_host_*
 
 echo '> Removing the build account ...'
-build_user="${BUILD_USERNAME:-pkrbuild}"
+# Passed by the shutdown command; SUDO_USER is the same account by another
+# route (this script runs under the build account's own sudo), and pkrbuild
+# only the last resort. A wrong guess here would export the build account and
+# its authorized key inside the template.
+build_user="${BUILD_USERNAME:-${SUDO_USER:-pkrbuild}}"
+if [ "${build_user}" = 'root' ]; then
+	echo '> refusing to treat root as the build account' >&2
+	exit 1
+fi
 rm -f "/home/${build_user}/.ssh/authorized_keys"
 rm -f /etc/sudoers.d/90-cloud-init-users
 userdel -r "${build_user}" 2>/dev/null ||

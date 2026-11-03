@@ -23,24 +23,17 @@ digest="${VAULTWARDEN_IMAGE##*@}"
 repository="${VAULTWARDEN_IMAGE%@*}"
 repository="${repository%:*}"
 
-echo '> Configuring the Docker daemon ...'
-install -d -m 0755 /etc/docker
-cat >/etc/docker/daemon.json <<'EOF'
-{
-  "iptables": false,
-  "ip6tables": false,
-  "bridge": "none",
-  "ip-forward": false,
-  "no-new-privileges": true,
-  "live-restore": false,
-  "log-driver": "local",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "5"
-  }
-}
-EOF
-chmod 0644 /etc/docker/daemon.json
+echo '> Checking the Docker daemon configuration ...'
+# Written by install-packages.sh BEFORE docker.io was installed, so that the
+# daemon's first start - which the package triggers - was already the
+# restricted one. A default-configured first start would have left docker0,
+# the DOCKER chains and ip_forward=1 behind, which no later restart removes.
+for key in '"iptables": false' '"ip6tables": false' '"bridge": "none"' '"ip-forward": false'; do
+	if ! grep -qF "${key}" /etc/docker/daemon.json; then
+		echo "> /etc/docker/daemon.json lacks ${key}; install-packages.sh must write it before the package"
+		exit 1
+	fi
+done
 
 # The API stays the stock Unix socket, root-only: nobody is put in the docker
 # group, which is root-equivalent, and the listener check below fails the build
@@ -63,6 +56,10 @@ if ip link show docker0 >/dev/null 2>&1; then
 fi
 if ss -H -ltn | grep -qE ':(2375|2376) '; then
 	echo '> the Docker API is listening on TCP'
+	exit 1
+fi
+if [ "$(sysctl -n net.ipv4.ip_forward)" != '0' ]; then
+	echo '> net.ipv4.ip_forward is on; dockerd was started with the default configuration at some point'
 	exit 1
 fi
 members="$(getent group docker | cut -d: -f4)"

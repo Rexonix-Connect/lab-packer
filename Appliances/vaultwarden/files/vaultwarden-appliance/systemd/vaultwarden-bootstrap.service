@@ -8,7 +8,9 @@ Documentation=https://github.com/Rexonix-Connect/lab-packer
 After=ovf-settings.service network-online.target postgresql.service ufw.service vaultwarden-datadisk.service
 Wants=network-online.target
 RequiresMountsFor=/srv/vaultwarden
-Before=vaultwarden.service nginx.service
+# Before docker too: the outbound-proxy drop-in for dockerd is written here,
+# and a daemon that is already running keeps the environment it started with.
+Before=vaultwarden.service nginx.service docker.service
 ConditionPathExists=!/var/lib/vaultwarden-appliance/bootstrapped
 
 [Service]

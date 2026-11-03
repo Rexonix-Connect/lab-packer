@@ -101,6 +101,9 @@ jobs:
       # rules. None of that can be exercised on a built template, so its logic
       # is checked here first, with nothing but python3 and bash.
       - name: Check the appliance logic
+        # Explicit: the step uses shopt and arrays, and inside a container the
+        # default shell is whatever the image resolves `bash` to.
+        shell: bash
         run: |
           python3 Appliances/vaultwarden/tests/test_firstboot.py
           shopt -s nullglob

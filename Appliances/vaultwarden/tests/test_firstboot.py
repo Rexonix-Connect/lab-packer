@@ -79,6 +79,21 @@ rules = fb.firewall_rules(["10.0.0.0/8"], ["192.0.2.0/24"])
 check("allowlists produce one rule per source",
       [r[4] for r in rules] == ["10.0.0.0/8", "192.0.2.0/24"]
       and rules[0][8] == "80,443" and rules[1][8] == "22", rules)
+# A typo must never widen access: `10.0.0.0/33` is a filled-in field with
+# nothing valid in it, which is not the same thing as an empty field.
+entries, invalid = fb.allowlist({"vaultwarden.https-allow": "10.0.0.0/33"},
+                                "vaultwarden.https-allow")
+check("an allowlist with only invalid entries is flagged, not emptied",
+      entries == [] and invalid is True)
+check("an empty allowlist is empty, not invalid",
+      fb.allowlist({}, "vaultwarden.https-allow") == ([], False))
+check("a mixed allowlist keeps the valid entries and is not flagged",
+      fb.allowlist({"vaultwarden.ssh-allow": "10.0.0.0/33 192.0.2.0/24"},
+                   "vaultwarden.ssh-allow") == (["192.0.2.0/24"], False))
+check("an invalid HTTPS allowlist installs no HTTPS rule at all",
+      fb.firewall_rules([], ["192.0.2.0/24"], https_closed=True)
+      == [["allow", "proto", "tcp", "from", "192.0.2.0/24", "to", "any",
+           "port", "22", "comment", "vaultwarden-ssh"]])
 status = """Status: active
 
      To                         Action      From

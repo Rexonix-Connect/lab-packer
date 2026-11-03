@@ -255,6 +255,22 @@ def parse_networks(value, field):
     return entries
 
 
+def allowlist(props, key):
+    """(entries, invalid): invalid is True when the field was filled in but
+    nothing in it parsed.
+
+    That case must not look like an empty field: an empty vaultwarden.https-
+    allow means "from anywhere" on purpose, while `10.0.0.0/33` means someone
+    tried to restrict it and mistyped. The callers fail closed on it.
+    """
+    raw = prop(props, key)
+    entries = parse_networks(raw, key)
+    invalid = bool(raw) and not entries
+    if invalid:
+        log('%s is set but contains no valid address or CIDR' % key)
+    return entries, invalid
+
+
 def parse_emails(value, field):
     entries = []
     for entry in split_list(value):
@@ -519,19 +535,30 @@ def apply_secrets(props, first_boot):
     silently turn SMTP or SSO off on the next boot.
     """
     generated = ''
-    supplied_hash = prop(props, 'vaultwarden.admin-token-hash')
-    if supplied_hash:
-        if ARGON2_PHC_RE.match(supplied_hash):
-            write_secret(SECRET_ADMIN_TOKEN, supplied_hash)
-        else:
+    # The admin token is seeded at first boot only. Day-two changes are made
+    # with vaultwarden-admin-token (rotate, disable), and a reconcile must not
+    # write the form's original hash back over them - or `rotate` would print
+    # a token that cannot log in while the old one keeps working, and
+    # `disable` would quietly re-enable the page.
+    if first_boot:
+        supplied_hash = prop(props, 'vaultwarden.admin-token-hash')
+        if supplied_hash and not ARGON2_PHC_RE.match(supplied_hash):
             # A plaintext token here would be stored and compared as-is; the
             # field exists for an argon2id hash only.
             log('ignoring vaultwarden.admin-token-hash: not an argon2id PHC'
                 ' string (generate one with `vaultwarden-admin-token hash`)')
-    if first_boot and not have_secret(SECRET_ADMIN_TOKEN):
-        generated = secrets.token_urlsafe(32)
-        write_secret(SECRET_ADMIN_TOKEN, hash_admin_token(generated))
-        log('generated the admin token')
+            supplied_hash = ''
+        if supplied_hash:
+            write_secret(SECRET_ADMIN_TOKEN, supplied_hash)
+        else:
+            # Generated afresh on every bootstrap attempt, not only when no
+            # hash exists yet: the plaintext is handed to the operator only
+            # once the whole bootstrap has succeeded, so a hash left behind
+            # by an attempt that failed later (a bad TLS pair, say) belongs
+            # to a token nobody ever saw.
+            generated = secrets.token_urlsafe(32)
+            write_secret(SECRET_ADMIN_TOKEN, hash_admin_token(generated))
+            log('generated the admin token')
 
     for field, name in (('vaultwarden.smtp-password', SECRET_SMTP_PASSWORD),
                         ('vaultwarden.sso-client-secret',
@@ -737,15 +764,19 @@ def write_nginx_snippets(fqdn, admin_allow, operator_certificate):
     run(['nginx', '-t'], capture_output=True)
 
 
-def firewall_rules(https_allow, ssh_allow):
+def firewall_rules(https_allow, ssh_allow, https_closed=False):
     """The ufw rules this appliance owns, as argument lists.
 
     HTTPS (and the plain-HTTP redirect) from the allowlist, or from anywhere
-    when it is empty. SSH from the management allowlist when one is given;
-    when it is empty the base image's own `allow ssh` rule is left in charge.
+    when it is empty - or from nowhere (ufw's default deny) when the field
+    was filled in with nothing valid, which is the one way to mistype an
+    allowlist that cannot open the service to the world. SSH from the
+    management allowlist when one is given; when it is empty, or invalid,
+    the base image's own `allow ssh` rule is left in charge, because losing
+    SSH over a typo would be worse than keeping the base posture.
     """
     rules = []
-    for source in https_allow or ['any']:
+    for source in [] if https_closed else (https_allow or ['any']):
         rules.append(['allow', 'proto', 'tcp', 'from', source, 'to', 'any',
                       'port', '80,443', 'comment', 'vaultwarden-https'])
     for source in ssh_allow:
@@ -765,9 +796,9 @@ def owned_rule_numbers(status_output):
     return sorted(numbers, reverse=True)
 
 
-def apply_firewall(https_allow, ssh_allow):
+def apply_firewall(https_allow, ssh_allow, https_closed=False):
     """Returns True when ufw was changed."""
-    desired = {'rules': firewall_rules(https_allow, ssh_allow),
+    desired = {'rules': firewall_rules(https_allow, ssh_allow, https_closed),
                'base_ssh': not ssh_allow}
     previous = None
     if os.path.exists(FIREWALL_STATE):
@@ -795,7 +826,8 @@ def apply_firewall(https_allow, ssh_allow):
         run(['ufw', 'allow', 'ssh'], capture_output=True)
     write_file(FIREWALL_STATE, json.dumps(desired, indent=2) + '\n', 0o644)
     log('firewall: HTTPS from %s; SSH from %s'
-        % (', '.join(https_allow) or 'anywhere',
+        % ('NOWHERE (vaultwarden.https-allow has no valid entry)'
+           if https_closed else ', '.join(https_allow) or 'anywhere',
            ', '.join(ssh_allow) or 'anywhere (base image rule)'))
     return True
 
@@ -909,6 +941,19 @@ def write_proxy(props):
         log('outbound proxy %s' % ('set to %s (bypass: %s)'
                                    % (scrub_proxy(proxy), no_proxy)
                                    if proxy else 'cleared'))
+        # daemon-reload only re-reads the unit; a running dockerd keeps the
+        # environment it started with, and image pulls would keep going the
+        # old way. At boot the units are ordered Before=docker.service, so
+        # dockerd starts with the drop-in in place; outside boot the daemon
+        # is restarted here (which restarts vaultwarden.service with it,
+        # PartOf). Inside our own unit the restart is queued rather than
+        # waited on, for the reason restart_services() gives.
+        if not system_is_booting():
+            command = ['systemctl', 'try-restart', 'docker.service']
+            if in_appliance_unit():
+                command.insert(1, '--no-block')
+            run(command, check=False)
+            log('docker restarted to pick up the proxy change')
     return changed
 
 
@@ -1040,12 +1085,11 @@ def apply_configuration(props, first_boot):
     """Everything both modes share. Returns (state, generated_token, changed)."""
     fqdn, addresses = resolve_identity(props)
     log('identity: %s' % (fqdn or '(none)'))
-    admin_allow = parse_networks(prop(props, 'vaultwarden.admin-allow'),
-                                 'vaultwarden.admin-allow')
-    https_allow = parse_networks(prop(props, 'vaultwarden.https-allow'),
-                                 'vaultwarden.https-allow')
-    ssh_allow = parse_networks(prop(props, 'vaultwarden.ssh-allow'),
-                               'vaultwarden.ssh-allow')
+    # An invalid-only admin allowlist already fails closed: the snippet then
+    # allows loopback and denies the rest.
+    admin_allow, _ = allowlist(props, 'vaultwarden.admin-allow')
+    https_allow, https_closed = allowlist(props, 'vaultwarden.https-allow')
+    ssh_allow, ssh_invalid = allowlist(props, 'vaultwarden.ssh-allow')
 
     changed = False
     token = apply_secrets(props, first_boot)
@@ -1062,7 +1106,7 @@ def apply_configuration(props, first_boot):
     changed |= snapshot([SNIPPET_SERVER_NAME, SNIPPET_ADMIN,
                          SNIPPET_HSTS]) != before
 
-    changed |= apply_firewall(https_allow, ssh_allow)
+    changed |= apply_firewall(https_allow, ssh_allow, https_closed)
     changed |= write_proxy(props)
 
     state = {}
@@ -1081,8 +1125,13 @@ def apply_configuration(props, first_boot):
         'sso': settings.get('SSO_ENABLED') == 'true',
         'org_creation_users': settings['ORG_CREATION_USERS'],
         'admin_access': ', '.join(['loopback'] + admin_allow),
-        'https_allow': ', '.join(https_allow) or 'anywhere',
-        'ssh_allow': ', '.join(ssh_allow) or 'anywhere',
+        # vaultwarden-status keys off the CLOSED prefix.
+        'https_allow': ('CLOSED - vaultwarden.https-allow has no valid entry'
+                        if https_closed else ', '.join(https_allow)
+                        or 'anywhere'),
+        'ssh_allow': ('anywhere (base rule; vaultwarden.ssh-allow has no'
+                      ' valid entry)' if ssh_invalid
+                      else ', '.join(ssh_allow) or 'anywhere'),
     })
     return state, token, changed
 
