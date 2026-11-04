@@ -43,6 +43,25 @@ check_filter vaultwarden \
 check_filter vaultwarden-admin \
 	'[2026-11-01 10:00:00.000][vaultwarden::api::admin][ERROR] Invalid admin token. IP: 192.0.2.10'
 systemctl enable fail2ban.service
+# The package started fail2ban when it was installed, with the stock jails;
+# the ones written above are only read on a restart. Jails come up
+# asynchronously after the service is "active", so wait for them rather than
+# ask once - and show the journal when one never appears, which is the only
+# place a jail's own start error is written.
+systemctl restart fail2ban.service
+for jail in sshd vaultwarden vaultwarden-admin; do
+	for _ in $(seq 1 30); do
+		fail2ban-client status "${jail}" >/dev/null 2>&1 && break
+		sleep 1
+	done
+	if ! fail2ban-client status "${jail}" >/dev/null 2>&1; then
+		echo "> the fail2ban jail ${jail} did not start:"
+		journalctl --no-pager -u fail2ban -n 50 || true
+		fail2ban-client status || true
+		exit 1
+	fi
+done
+echo '> fail2ban jails running: sshd, vaultwarden, vaultwarden-admin'
 
 systemctl daemon-reload
 systemctl enable vaultwarden-backup.timer
