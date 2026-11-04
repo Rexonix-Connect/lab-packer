@@ -87,7 +87,33 @@ if [ ! -f "${NETBOX_ROOT}/local_requirements.txt" ]; then
 #     netbox-upgrade --reinstall
 #
 # Plugins also have to be listed in PLUGINS in /etc/netbox/appliance.json.
+#
+# A line tagged "lab-packer workaround" is not a plugin: it pins around
+# upstream dependency drift for the installed release, and netbox-upgrade adds
+# or removes it as the release being installed needs. Leave it to that.
 EOF
+fi
+
+# NetBox 4.6 pins mkdocstrings 1.0.6 but not pymdown-extensions, and
+# pymdown-extensions 12.2 (October 2026) broke that pair: upgrade.sh dies
+# building the bundled documentation with "Highlight.__init__() missing 1
+# required positional argument: 'md'" (netbox-community/netbox#23376). Upstream
+# fixed it in 4.7.3 by moving to mkdocstrings 1.0.7, and the 4.6 line ended
+# without the fix, so every 4.6 release needs this pin. It lives in
+# local_requirements.txt, which upgrade.sh installs on top of requirements.txt,
+# rather than in the venv, because upgrade.sh rebuilds the venv from scratch
+# on every run - including netbox-upgrade --reinstall on a deployed appliance.
+#
+# It is also exactly wrong for a release that pins mkdocstrings itself to
+# something newer (4.7.4 pins 1.0.8), so netbox-upgrade maintains the line
+# with the same rule: present while requirements.txt pins 1.0.6, absent
+# otherwise. The tag and the condition here must match the ones there.
+if grep -qE '^mkdocstrings==1\.0\.6[[:space:]]*$' "${NETBOX_ROOT}/requirements.txt" &&
+	! grep -qF 'lab-packer workaround: netbox-community/netbox#23376' \
+		"${NETBOX_ROOT}/local_requirements.txt"; then
+	echo "> Pinning mkdocstrings 1.0.7 for the ${NETBOX_VERSION} documentation build (netbox-community/netbox#23376) ..."
+	printf 'mkdocstrings==1.0.7  # lab-packer workaround: netbox-community/netbox#23376\n' \
+		>>"${NETBOX_ROOT}/local_requirements.txt"
 fi
 
 echo "> Installing the appliance configuration loader ..."

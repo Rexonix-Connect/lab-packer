@@ -135,6 +135,9 @@ jobs:
       # built, so its logic is checked here, before the build is worth
       # spending. The checks need nothing but python3.
       - name: Check the appliance logic
+        # Explicit: the step uses shopt and arrays, and inside the Packer
+        # container the default shell is sh, where shopt does not exist.
+        shell: bash
         run: |
           python3 Appliances/netbox/tests/test_firstboot.py
           # nullglob so an empty directory does not hand bash the pattern
