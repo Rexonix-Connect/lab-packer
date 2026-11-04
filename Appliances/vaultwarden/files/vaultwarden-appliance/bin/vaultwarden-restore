@@ -25,6 +25,7 @@ DATA_ROOT=/srv/vaultwarden
 BACKUP_DIR="${DATA_ROOT}/backups"
 CONFIG_DIR=/etc/vaultwarden
 STATE_DIR=/var/lib/vaultwarden-appliance
+DIRSYNC_ROOT=/var/lib/vaultwarden-dirsync
 
 if [ "$(id -u)" -ne 0 ]; then
 	echo "vaultwarden-restore: run as root (stops services and replaces the database)" >&2
@@ -128,6 +129,20 @@ chown root:vaultwarden "${CONFIG_DIR}/secrets"
 chmod 0750 "${CONFIG_DIR}/secrets"
 find "${CONFIG_DIR}/secrets" -type f -exec chown root:vaultwarden {} + -exec chmod 0440 {} +
 
+# The directory sync configuration, when the backup carries one: the
+# connector's state and its API credentials, owned by the sync account. The
+# timer is left as it is on this appliance - a copy restored for a drill must
+# not start inviting and revoking people - and the summary says so.
+dirsync_restored=no
+if tar --list --gzip --file="${files}" | grep -q "^${DIRSYNC_ROOT#/}/" && id vaultwarden-dirsync >/dev/null 2>&1; then
+	echo "vaultwarden-restore: restoring the directory sync configuration ..."
+	rm -rf "${DIRSYNC_ROOT}/appdata" "${DIRSYNC_ROOT}/credentials.env" "${DIRSYNC_ROOT}/state.json"
+	tar --extract --gzip --file="${files}" --directory=/ "${DIRSYNC_ROOT#/}"
+	chown -R vaultwarden-dirsync:vaultwarden-dirsync "${DIRSYNC_ROOT}"
+	chmod 0700 "${DIRSYNC_ROOT}"
+	[ -f "${DIRSYNC_ROOT}/credentials.env" ] && dirsync_restored=yes
+fi
+
 # The restored schema and key are now this appliance's: the guard protects
 # them from the next start on.
 install -d -m 0755 "${STATE_DIR}"
@@ -149,3 +164,10 @@ done
 echo "vaultwarden-restore: restored $(basename "${dump}")."
 echo "  Now sign in with a known account and check vaults, organizations and an"
 echo "  attachment before telling users the service is back."
+if [ "${dirsync_restored}" = yes ]; then
+	echo "  The directory sync configuration came with the backup; its timer is"
+	echo "  $(systemctl is-enabled vaultwarden-dirsync.timer 2>/dev/null || echo disabled) on this appliance."
+	echo "  Check 'vaultwarden-dirsync status' - the connector targets the URL it"
+	echo "  was set up for, so a different FQDN needs 'vaultwarden-dirsync setup'"
+	echo "  again - then 'vaultwarden-dirsync resync' once this is the live instance."
+fi

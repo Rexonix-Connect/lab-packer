@@ -217,6 +217,55 @@ for unit in vaultwarden.service nginx.service docker.service fail2ban.service \
 	vaultwarden-backup.timer vaultwarden-datadisk.service; do
 	systemctl is-enabled "${unit}" >/dev/null || fail "${unit} is not enabled"
 done
+# The directory sync ships installed but off: there is nothing to sync until
+# an organization exists on a deployed appliance. The service has no
+# [Install] section (static); the timer must not be enabled; the command
+# must know it is unconfigured and refuse to run.
+[ "$(systemctl is-enabled vaultwarden-dirsync.service 2>/dev/null || true)" = 'static' ] ||
+	fail 'vaultwarden-dirsync.service is missing or not static'
+[ "$(systemctl is-enabled vaultwarden-dirsync.timer 2>/dev/null || true)" = 'disabled' ] ||
+	fail 'vaultwarden-dirsync.timer must ship disabled'
+[ "$(cat /opt/bitwarden-directory-connector/VERSION 2>/dev/null)" = "${DIRECTORY_CONNECTOR_VERSION}" ] ||
+	fail "the shipped Directory Connector is not ${DIRECTORY_CONNECTOR_VERSION}"
+vaultwarden-dirsync status | grep -q 'not configured' ||
+	fail 'vaultwarden-dirsync status does not report the sync as unconfigured'
+if runuser -u vaultwarden-dirsync -- /usr/local/sbin/vaultwarden-dirsync run >/dev/null 2>&1; then
+	fail 'vaultwarden-dirsync run must refuse without a configuration'
+fi
+echo "> Directory Connector ${DIRECTORY_CONNECTOR_VERSION}: installed, disabled, refuses to run unconfigured."
+
+echo '> Verifying bwdc runs inside the sync unit sandbox ...'
+# A throwaway configuration pointing at a port nothing listens on, so the
+# unit gets exactly as far as bwdc failing to log in. That proves the Node
+# binary starts and runs under the unit's syscall filter and address-family
+# restrictions: a sandbox that kills it would end the unit by signal here,
+# on the build, instead of at a customer's first sync.
+DIRSYNC_ROOT=/var/lib/vaultwarden-dirsync
+runuser -u vaultwarden-dirsync -- env HOME="${DIRSYNC_ROOT}" \
+	BITWARDENCLI_CONNECTOR_APPDATA_DIR="${DIRSYNC_ROOT}/appdata" \
+	BITWARDENCLI_CONNECTOR_PLAINTEXT_SECRETS=true \
+	/opt/bitwarden-directory-connector/bwdc --quiet --nointeraction config server https://127.0.0.1:9 ||
+	fail 'bwdc could not write its throwaway configuration'
+printf 'BW_CLIENTID=organization.00000000-0000-0000-0000-000000000000\nBW_CLIENTSECRET=build-only\n' \
+	>"${DIRSYNC_ROOT}/credentials.env"
+chown vaultwarden-dirsync:vaultwarden-dirsync "${DIRSYNC_ROOT}/credentials.env"
+chmod 0600 "${DIRSYNC_ROOT}/credentials.env"
+if systemctl start vaultwarden-dirsync.service >/dev/null 2>&1; then
+	fail 'the sync unit succeeded against a port nothing listens on'
+fi
+result="$(systemctl show vaultwarden-dirsync.service -p Result --value)"
+if [ "${result}" != 'exit-code' ]; then
+	journalctl --no-pager -u vaultwarden-dirsync -n 40 || true
+	fail "the sync unit ended with Result=${result}; a signal means the sandbox killed bwdc"
+fi
+journalctl --no-pager -u vaultwarden-dirsync -b | grep -q 'login failed' || {
+	journalctl --no-pager -u vaultwarden-dirsync -n 40 || true
+	fail 'the sync unit did not get as far as a login attempt'
+}
+systemctl reset-failed vaultwarden-dirsync.service || true
+rm -rf "${DIRSYNC_ROOT}/appdata" "${DIRSYNC_ROOT}/credentials.env" "${DIRSYNC_ROOT}/state.json"
+install -d -m 0700 -o vaultwarden-dirsync -g vaultwarden-dirsync "${DIRSYNC_ROOT}/appdata"
+echo '> bwdc ran under the unit sandbox and failed cleanly, as it should with no server.'
 systemctl is-active fail2ban.service >/dev/null || systemctl start fail2ban.service
 # Jails come up asynchronously after the service is active.
 for jail in vaultwarden vaultwarden-admin; do

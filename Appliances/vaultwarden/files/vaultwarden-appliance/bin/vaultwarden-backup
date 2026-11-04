@@ -4,7 +4,8 @@
 #   vaultwarden-<stamp>.dump           pg_dump --format=custom of the database
 #   vaultwarden-<stamp>.files.tar.gz   the data directory (attachments, Sends,
 #                                      rsa_key.pem, config.json), the settings,
-#                                      the secrets and the deployment metadata
+#                                      the secrets, the directory sync
+#                                      configuration and the deployment metadata
 #
 # Both halves are needed: the RSA key signs every login token, and without the
 # attachment files their database rows point at nothing. By default Vaultwarden
@@ -18,6 +19,7 @@ set -euo pipefail
 DATA_ROOT=/srv/vaultwarden
 BACKUP_DIR="${DATA_ROOT}/backups"
 CONFIG_DIR=/etc/vaultwarden
+DIRSYNC_ROOT=/var/lib/vaultwarden-dirsync
 RETENTION_DAYS=14
 QUIESCE=yes
 OFFSITE_COMMAND=
@@ -89,14 +91,21 @@ echo "vaultwarden-backup: archiving the data directory and configuration ..."
 } >"${meta}/backup-info"
 # Physical paths, relative to /. The icon cache is regenerated on demand and
 # can be large, so it is left out.
+members=(
+	"${DATA_ROOT#/}/data"
+	"${CONFIG_DIR#/}/secrets"
+	"${CONFIG_DIR#/}/vaultwarden.env"
+	"${CONFIG_DIR#/}/.env"
+)
+# The directory sync's configuration, API credentials and last result, when
+# the image carries the connector. More secrets, in an archive that is 0600
+# in a 0700 directory already because of the ones above.
+[ -d "${DIRSYNC_ROOT}" ] && members+=("${DIRSYNC_ROOT#/}")
 tar --create --gzip --file="${files}" \
 	--exclude="${DATA_ROOT#/}/data/icon_cache" \
 	--exclude="${DATA_ROOT#/}/data/tmp" \
 	--directory=/ \
-	"${DATA_ROOT#/}/data" \
-	"${CONFIG_DIR#/}/secrets" \
-	"${CONFIG_DIR#/}/vaultwarden.env" \
-	"${CONFIG_DIR#/}/.env" \
+	"${members[@]}" \
 	--directory="${meta}" backup-info
 chmod 0600 "${dump}" "${files}"
 

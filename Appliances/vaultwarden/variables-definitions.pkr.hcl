@@ -75,6 +75,30 @@ variable "vaultwardenImageRepository" {
   default = "docker.io/vaultwarden/server"
 }
 
+# The Bitwarden Directory Connector CLI shipped in the image for Entra ID
+# member sync (vaultwarden-dirsync). Pinned by release and by the sha256 of
+# the bwdc-linux-<version>.zip release asset, which the GitHub release API
+# reports as the asset's digest. Move both together.
+variable "directoryConnectorVersion" {
+  type    = string
+  default = "2026.10.0"
+
+  validation {
+    condition     = can(regex("^[0-9]{4}\\.[0-9]+\\.[0-9]+$", var.directoryConnectorVersion))
+    error_message = "The directoryConnectorVersion variable must be a pinned release such as 2026.10.0, never latest."
+  }
+}
+
+variable "directoryConnectorSha256" {
+  type    = string
+  default = "b46e723804ab1ab3a8b3cb34cd5901acb44a570d94cdc5176e80ebde086dd994"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.directoryConnectorSha256))
+    error_message = "The directoryConnectorSha256 variable must be the 64-hex sha256 of bwdc-linux-<version>.zip."
+  }
+}
+
 # Throwaway account the build logs in with; finalize.sh deletes it.
 variable "buildUsername" {
   type    = string

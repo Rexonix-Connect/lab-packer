@@ -217,6 +217,11 @@ jobs:
           before="$(guest 'cat /etc/vaultwarden/volume-id; sha256sum /srv/vaultwarden/data/rsa_key.pem')"
           guest 'grep -qE "^(ADMIN_TOKEN|SMTP_PASSWORD)=" /etc/vaultwarden/vaultwarden.env && exit 1 || true'
           guest 'ufw status | grep -q "80,443/tcp.*ALLOW"'
+          # The directory sync ships installed and off, waiting for setup.
+          guest 'test -x /opt/bitwarden-directory-connector/bwdc'
+          guest 'vaultwarden-dirsync status | grep -q "not configured"'
+          guest 'test "$(systemctl is-enabled vaultwarden-dirsync.timer 2>/dev/null || true)" = disabled'
+          guest 'grep -q "^ORG_GROUPS_ENABLED=.false.$" /etc/vaultwarden/vaultwarden.env'
 
           echo "Rebooting the guest ..."
           guest 'systemctl reboot' || true

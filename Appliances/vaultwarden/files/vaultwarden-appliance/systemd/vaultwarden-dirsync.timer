@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodic Vaultwarden directory sync from Microsoft Entra ID
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+
+[Timer]
+# Shipped disabled; vaultwarden-dirsync setup enables it and overrides the
+# interval through a drop-in. systemd never starts the service while a
+# previous run is still active, so syncs cannot overlap.
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

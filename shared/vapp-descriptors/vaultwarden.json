@@ -23,6 +23,13 @@
       "type": "string"
     },
     {
+      "id": "vaultwarden.org-groups",
+      "category": "Vaultwarden Application",
+      "label": "Organization Groups",
+      "description": "true enables Vaultwarden's organization groups (ORG_GROUPS_ENABLED, marked beta upstream), which 'vaultwarden-dirsync setup --groups' needs to mirror Entra ID groups and their collection access. Empty or false leaves groups off; collections are then assigned to members directly. Re-read on every boot",
+      "type": "string"
+    },
+    {
       "id": "vaultwarden.admin-allow",
       "category": "Vaultwarden Application",
       "label": "Admin Page Allowlist",
