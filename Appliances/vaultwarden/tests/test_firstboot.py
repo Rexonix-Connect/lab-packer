@@ -124,6 +124,15 @@ check("hardening defaults", settings["SHOW_PASSWORD_HINT"] == "false"
       and settings["PASSWORD_HINTS_ALLOWED"] == "false"
       and settings["HTTP_REQUEST_BLOCK_NON_GLOBAL_IPS"] == "true"
       and settings["SSO_ENABLED"] == "false")
+check("organization groups are off unless the form turns them on",
+      settings["ORG_GROUPS_ENABLED"] == "false"
+      and fb.build_settings({"vaultwarden.org-groups": "True"}, "v",
+                            no_secrets)["ORG_GROUPS_ENABLED"] == "true"
+      and fb.build_settings({"vaultwarden.org-groups": "maybe"}, "v",
+                            no_secrets)["ORG_GROUPS_ENABLED"] == "false")
+check("the proxy drop-ins cover Docker and the directory sync",
+      set(os.path.basename(os.path.dirname(p)) for p in fb.PROXY_DROPINS)
+      == {"docker.service.d", "vaultwarden-dirsync.service.d"})
 check("no *_FILE without its secret", not any(
     key.endswith("_FILE") for key in settings), settings)
 

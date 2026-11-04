@@ -13,6 +13,16 @@ on:
         type: string
         required: false
         default: sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      directory_connector_version:
+        description: Bitwarden Directory Connector CLI release to ship (for example 2026.10.0) - never latest
+        type: string
+        required: false
+        default: 2026.10.0
+      directory_connector_sha256:
+        description: sha256 of bwdc-linux-<version>.zip for that release (the asset digest in the GitHub release API)
+        type: string
+        required: false
+        default: b46e723804ab1ab3a8b3cb34cd5901acb44a570d94cdc5176e80ebde086dd994
       ssh_timeout:
         description: Packer SSH wait timeout (for example 45m or 1h)
         type: string
@@ -55,6 +65,16 @@ on:
         type: string
         required: false
         default: sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
+      directory_connector_version:
+        description: Bitwarden Directory Connector CLI release to ship (for example 2026.10.0) - never latest
+        type: string
+        required: false
+        default: 2026.10.0
+      directory_connector_sha256:
+        description: sha256 of bwdc-linux-<version>.zip for that release (the asset digest in the GitHub release API)
+        type: string
+        required: false
+        default: b46e723804ab1ab3a8b3cb34cd5901acb44a570d94cdc5176e80ebde086dd994
       ssh_timeout:
         description: Packer SSH wait timeout (for example 45m or 1h)
         type: string
@@ -188,6 +208,8 @@ jobs:
           PKR_VAR_buildPrivateKeyFile: ${{ steps.checkkey.outputs.private_key_file }}
           PKR_VAR_vaultwardenVersion: ${{ inputs.vaultwarden_version }}
           PKR_VAR_vaultwardenImageDigest: ${{ inputs.vaultwarden_image_digest }}
+          PKR_VAR_directoryConnectorVersion: ${{ inputs.directory_connector_version }}
+          PKR_VAR_directoryConnectorSha256: ${{ inputs.directory_connector_sha256 }}
         run: |
           packer init ./shared/config.pkr.hcl
           packer fmt -check ./Appliances/vaultwarden
@@ -222,6 +244,8 @@ jobs:
       PKR_VAR_templateName: ${{ vars.VAULTWARDEN_APPLIANCE_X64_VM_TEMPLATE_NAME }}
       PKR_VAR_vaultwardenVersion: ${{ inputs.vaultwarden_version }}
       PKR_VAR_vaultwardenImageDigest: ${{ inputs.vaultwarden_image_digest }}
+      PKR_VAR_directoryConnectorVersion: ${{ inputs.directory_connector_version }}
+      PKR_VAR_directoryConnectorSha256: ${{ inputs.directory_connector_sha256 }}
       PKR_VAR_libraryName: ${{ vars.VCENTER_PACKER_CONTENT_LIBRARY_NAME }}
       PKR_VAR_portGroup: ${{ vars.VCENTER_DEFAULT_PORT_GROUP }}
       PKR_VAR_vmName: "vaultwarden-appliance-temp"

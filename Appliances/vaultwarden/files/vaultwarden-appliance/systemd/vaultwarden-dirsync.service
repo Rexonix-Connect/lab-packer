@@ -1,0 +1,60 @@
+[Unit]
+Description=Vaultwarden directory sync from Microsoft Entra ID (Bitwarden Directory Connector)
+Documentation=https://github.com/Rexonix-Connect/lab-packer
+# The connector talks to the appliance's own HTTPS endpoint and to Microsoft
+# Graph; neither is reachable before the network is up, and the first is not
+# served until Vaultwarden is.
+After=network-online.target vaultwarden.service nginx.service
+Wants=network-online.target
+# vaultwarden-dirsync setup writes this; without it there is nothing to sync.
+# The timer can be enabled before setup without producing a failed unit.
+ConditionPathExists=/var/lib/vaultwarden-dirsync/credentials.env
+
+[Service]
+Type=oneshot
+User=vaultwarden-dirsync
+Group=vaultwarden-dirsync
+ExecStart=/usr/local/sbin/vaultwarden-dirsync run
+TimeoutStartSec=1800
+# bwdc keeps its state in data.json under this directory. Secrets are stored
+# in that file in plaintext: the alternative, a GNOME keyring, needs an
+# unlocked keyring daemon whose own unlock secret would have to be stored
+# somewhere, which gains nothing on a headless server. The directory is 0700
+# and owned by this account, and nothing else runs as it.
+Environment=BITWARDENCLI_CONNECTOR_APPDATA_DIR=/var/lib/vaultwarden-dirsync/appdata
+Environment=BITWARDENCLI_CONNECTOR_PLAINTEXT_SECRETS=true
+Environment=BW_NOINTERACTION=true
+Environment=HOME=/var/lib/vaultwarden-dirsync
+# The appliance's own certificate, so a self-signed one is trusted for the
+# connection to https://<fqdn>. For an operator-supplied chain this is the
+# chain itself, which is harmless.
+Environment=NODE_EXTRA_CA_CERTS=/etc/vaultwarden/tls/vaultwarden.crt
+
+# Hardening. No MemoryDenyWriteExecute: bwdc is a Node binary and V8 needs
+# writable, executable pages for its JIT. No ~@resources either: glibc
+# implements getrlimit() through prlimit64, which Node calls at startup, and
+# a filter that kills it would only show at a customer's first sync. The
+# build starts this unit against a throwaway configuration to prove the
+# sandbox lets bwdc run (verify.sh). AF_NETLINK is what getifaddrs() uses.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vaultwarden-dirsync
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077

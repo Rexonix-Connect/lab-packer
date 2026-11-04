@@ -33,6 +33,19 @@ rm -rf /var/lib/vaultwarden-appliance
 rm -f /root/vaultwarden-credentials.txt /etc/issue.d/60-vaultwarden.issue
 rm -f /etc/apt/apt.conf.d/95vaultwarden-proxy /etc/systemd/system/docker.service.d/30-proxy.conf
 
+echo '> Asserting the directory sync is unconfigured and clearing its state ...'
+# Nothing configures it during the build; this makes sure, and leaves the
+# sync account with an empty state directory, its timer disabled.
+if [ -f /var/lib/vaultwarden-dirsync/credentials.env ]; then
+	echo '> the directory sync was configured during the build; refusing to export the template' >&2
+	exit 1
+fi
+systemctl disable --now vaultwarden-dirsync.timer >/dev/null 2>&1 || true
+rm -rf /var/lib/vaultwarden-dirsync/appdata /var/lib/vaultwarden-dirsync/state.json \
+	/etc/systemd/system/vaultwarden-dirsync.timer.d /etc/systemd/system/vaultwarden-dirsync.service.d
+install -d -m 0700 -o vaultwarden-dirsync -g vaultwarden-dirsync /var/lib/vaultwarden-dirsync/appdata
+systemctl daemon-reload
+
 echo '> Removing appliance-owned firewall rules ...'
 # The first-boot bootstrap owns these (comment vaultwarden-https/-ssh) and
 # creates them from the deploy form. The build's restore test runs a

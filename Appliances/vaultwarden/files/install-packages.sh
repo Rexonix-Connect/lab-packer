@@ -55,7 +55,9 @@ EOF
 chmod 0644 /etc/docker/daemon.json
 
 echo '> Installing appliance packages ...'
-# argon2 hashes the Vaultwarden admin token at first boot.
+# argon2 hashes the Vaultwarden admin token at first boot. libsecret-1-0 is
+# the one native library the Bitwarden Directory Connector CLI loads
+# (install-directory-connector.sh); the keyring behind it is not used.
 apt-get "${APT_OPTS[@]}" install --yes --no-install-recommends \
 	argon2 \
 	ca-certificates \
@@ -63,6 +65,7 @@ apt-get "${APT_OPTS[@]}" install --yes --no-install-recommends \
 	docker-compose-v2 \
 	docker.io \
 	fail2ban \
+	libsecret-1-0 \
 	nginx \
 	postgresql \
 	postgresql-client \

@@ -9,7 +9,10 @@ set -uo pipefail
 STATE_DIR="${VAULTWARDEN_APPLIANCE_STATE_DIR:-/var/lib/vaultwarden-appliance}"
 STATE="${STATE_DIR}/state.json"
 DATA_ROOT="${VAULTWARDEN_DATA_ROOT:-/srv/vaultwarden}"
+DIRSYNC_ROOT="${VAULTWARDEN_DIRSYNC_ROOT:-/var/lib/vaultwarden-dirsync}"
 UNITS=(vaultwarden nginx docker postgresql fail2ban)
+# Set by any check below that monitoring should alert on; the exit status.
+unhealthy=0
 
 field() {
 	python3 -c 'import json,sys
@@ -17,6 +20,14 @@ try:
     print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 except Exception:
     print("")' "${STATE}" "${1}" 2>/dev/null
+}
+
+dirsync_field() {
+	python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except Exception:
+    print("")' "${DIRSYNC_ROOT}/state.json" "${1}" 2>/dev/null
 }
 
 if [ ! -f "${STATE_DIR}/bootstrapped" ]; then
@@ -44,6 +55,32 @@ echo "  URL       $(field url)"
 echo "  TLS       $(if [ "$(field self_signed_certificate)" = 'True' ]; then echo 'self-signed - Bitwarden apps will refuse it (vaultwarden-tls install <cert> <key>)'; else echo 'operator-supplied'; fi)"
 echo "  SMTP      $(if [ "$(field smtp)" = 'True' ]; then echo configured; else echo 'not configured - no invitation or verification mail'; fi)"
 echo "  SSO       $(if [ "$(field sso)" = 'True' ]; then echo 'OpenID Connect enabled'; else echo off; fi)"
+# The sync's configuration and result live in the sync account's 0700
+# directory, so only root can read them; the timer's state is public.
+if [ "$(id -u)" -eq 0 ]; then
+	if [ -f "${DIRSYNC_ROOT}/credentials.env" ]; then
+		timer="$(systemctl is-enabled vaultwarden-dirsync.timer 2>/dev/null || echo disabled)"
+		success="$(dirsync_field last_success)"
+		users="$(dirsync_field users)"
+		failures="$(dirsync_field consecutive_failures)"
+		line="Entra ID, timer ${timer}; last success ${success:-never}"
+		[ -n "${users}" ] && line="${line} ($(dirsync_field groups) groups, ${users} users)"
+		echo "  Dir sync  ${line}"
+		if [ "${failures:-0}" -ge 3 ]; then
+			echo "            ${failures} FAILURES IN A ROW - journalctl -u vaultwarden-dirsync"
+			unhealthy=1
+		elif [ "${failures:-0}" -gt 0 ]; then
+			echo "            last run failed - journalctl -u vaultwarden-dirsync"
+		fi
+		[ "${timer}" = 'enabled' ] || echo "            timer ${timer} - vaultwarden-dirsync enable"
+	else
+		echo "  Dir sync  off (vaultwarden-dirsync setup)"
+	fi
+elif systemctl is-enabled --quiet vaultwarden-dirsync.timer 2>/dev/null; then
+	echo "  Dir sync  Entra ID, timer enabled; result not visible to this account - sudo vaultwarden-status"
+else
+	echo "  Dir sync  off"
+fi
 echo "  Orgs      may be created by: $(field org_creation_users)"
 echo "  Access    HTTPS from $(field https_allow); SSH from $(field ssh_allow); /admin from $(field admin_access)"
 # A filled-in HTTPS allowlist with nothing valid in it installs no HTTPS rule
@@ -62,7 +99,6 @@ if [ "$(id -u)" -eq 0 ] && ! ufw status 2>/dev/null | grep -q '^Status: active';
 fi
 
 printf '  Services '
-unhealthy=0
 for unit in "${UNITS[@]}"; do
 	state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
 	printf '%s=%s ' "${unit}" "${state}"

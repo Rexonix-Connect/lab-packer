@@ -1,0 +1,642 @@
+#!/bin/bash
+# Keep the Vaultwarden organization's members and groups in step with
+# Microsoft Entra ID, using the Bitwarden Directory Connector CLI (bwdc) that
+# ships in the image. Configuration is a day-two step by nature: the
+# organization API key the connector logs in with does not exist until an
+# organization has been created after first boot.
+#
+#   vaultwarden-dirsync setup --tenant ... --application-id ... --org-client-id ... [options]
+#   vaultwarden-dirsync status | test | sync | resync | enable | disable | remove
+#   vaultwarden-dirsync bwdc -- <bwdc arguments>
+#
+# What a sync does on this Vaultwarden (1.37.5, src/api/core/public.rs): users
+# the directory returns are invited (by mail when SMTP is configured); users it
+# reports as deleted, or disabled unless --keep-disabled, are *revoked* from
+# the organization, never deleted; with --overwrite-existing, members the
+# directory no longer returns are removed from the organization (membership
+# only; the account and its individual vault remain); groups and their members
+# are mirrored when the appliance was deployed with vaultwarden.org-groups=true.
+# Owners are never touched by any of it.
+set -euo pipefail
+
+ROOT="${VAULTWARDEN_DIRSYNC_ROOT:-/var/lib/vaultwarden-dirsync}"
+APPDATA="${ROOT}/appdata"
+DATA_JSON="${APPDATA}/data.json"
+CREDENTIALS="${ROOT}/credentials.env"
+STATE="${ROOT}/state.json"
+BWDC="${VAULTWARDEN_DIRSYNC_BWDC:-/opt/bitwarden-directory-connector/bwdc}"
+SERVICE_USER="${VAULTWARDEN_DIRSYNC_USER:-vaultwarden-dirsync}"
+APPLIANCE_STATE="${VAULTWARDEN_APPLIANCE_STATE_DIR:-/var/lib/vaultwarden-appliance}/state.json"
+TIMER_DROPIN="${VAULTWARDEN_DIRSYNC_TIMER_DROPIN:-/etc/systemd/system/vaultwarden-dirsync.timer.d/10-interval.conf}"
+CA_CERT="${VAULTWARDEN_TLS_CERT:-/etc/vaultwarden/tls/vaultwarden.crt}"
+UNIT=vaultwarden-dirsync.service
+TIMER=vaultwarden-dirsync.timer
+
+usage() {
+	cat <<'USAGE'
+usage: vaultwarden-dirsync setup [options]
+       vaultwarden-dirsync status
+       vaultwarden-dirsync test
+       vaultwarden-dirsync sync
+       vaultwarden-dirsync resync
+       vaultwarden-dirsync enable | disable
+       vaultwarden-dirsync remove [--yes]
+       vaultwarden-dirsync bwdc -- <bwdc arguments>
+
+  setup    configure the connector, test the directory, run a first sync and
+           enable the timer. Required:
+             --tenant <hostname or id>      Entra tenant (contoso.onmicrosoft.com)
+             --application-id <uuid>        the app registration's Application (client) ID
+             --org-client-id organization.<uuid>
+                                            the organization API key's client_id
+           Secrets are prompted for, or read from a file - never taken from the
+           command line, which every local account can read in `ps`:
+             --entra-secret-file <file>     the app registration's client secret
+             --org-secret-file <file>       the organization API key's client_secret
+           Options:
+             --groups                       mirror groups too (needs vaultwarden.org-groups=true)
+             --user-filter <expr>           e.g. includeGroup:<group object id>
+             --group-filter <expr>          e.g. include:Vault Users,Vault Admins
+             --keep-disabled                do not revoke members disabled in Entra (default: revoke)
+             --overwrite-existing           remove members the directory no longer returns
+             --large-import                 more than 2000 users or groups
+             --interval <minutes>           default 15
+             --yes                          no confirmation before the first sync
+  status   configuration, timer, last result - no secrets
+  test     simulated sync: what the directory returns, without changing anything
+  sync     one sync now, through the service unit (same as the timer)
+  resync   clear the connector's change cache, then sync everything again
+  enable   start the timer; disable stops it (the configuration stays)
+  remove   delete the configuration, the secrets and the state
+  bwdc     run bwdc as the sync account against its configuration, for anything
+           this command does not cover (Bitwarden's own documentation applies)
+USAGE
+}
+
+die() {
+	echo "vaultwarden-dirsync: ${1}" >&2
+	exit "${2:-1}"
+}
+
+require_root() {
+	if [ "$(id -u)" -ne 0 ]; then
+		echo "vaultwarden-dirsync: run as root (it manages the sync account's files and units)" >&2
+		echo "  try: sudo vaultwarden-dirsync $*" >&2
+		exit 1
+	fi
+}
+
+configured() {
+	[ -f "${CREDENTIALS}" ] && [ -f "${DATA_JSON}" ]
+}
+
+json_get() { # json_get <file> <key>[.<key>...]  - "" when absent
+	python3 - "$1" "$2" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as handle:
+        value = json.load(handle)
+    for key in sys.argv[2].split("."):
+        value = value[key]
+    if isinstance(value, bool):
+        print("true" if value else "false")
+    elif value is not None:
+        print(value)
+except Exception:
+    pass
+PY
+}
+
+# bwdc's environment: its state directory, plaintext secrets (see the unit),
+# no prompts, and the appliance's own certificate as a trusted CA.
+bwdc_environment() {
+	echo "HOME=${ROOT}"
+	echo "BITWARDENCLI_CONNECTOR_APPDATA_DIR=${APPDATA}"
+	echo "BITWARDENCLI_CONNECTOR_PLAINTEXT_SECRETS=true"
+	echo "BW_NOINTERACTION=true"
+	echo "NODE_EXTRA_CA_CERTS=${CA_CERT}"
+}
+
+# Everything that touches the connector's state runs as the sync account, so
+# the files it creates are its own and root never holds a secret it does not
+# need to. With --credentials the account sources its own credentials file
+# before the command, so BW_CLIENTSECRET reaches bwdc through the environment
+# and is never a process argument.
+as_service_user() { # as_service_user [--credentials] <command...>
+	local credentials=''
+	if [ "${1:-}" = '--credentials' ]; then
+		credentials="${CREDENTIALS}"
+		shift
+	fi
+	local -a environment
+	mapfile -t environment < <(bwdc_environment)
+	local wrapper='set -a; if [ -n "$1" ]; then . "$1"; fi; set +a; shift; exec "$@"'
+	if [ "$(id -un)" = "${SERVICE_USER}" ]; then
+		env "${environment[@]}" bash -c "${wrapper}" bash "${credentials}" "$@"
+	else
+		runuser -u "${SERVICE_USER}" -- env "${environment[@]}" bash -c "${wrapper}" bash "${credentials}" "$@"
+	fi
+}
+
+# bwdc --response prints one JSON object: {success, message, data}. The
+# message is the only thing worth showing from a failure, and it never
+# contains a secret - bwdc reports what went wrong, not what it was given.
+response_message() { # response_message <json or text>
+	python3 -c '
+import json
+import sys
+
+raw = sys.stdin.read()
+try:
+    response = json.loads(raw)
+except ValueError:
+    text = raw.strip()
+    print(text[-300:] if text else "no output")
+    raise SystemExit(0)
+if response.get("success"):
+    data = response.get("data") or {}
+    parts = [data.get("title"), data.get("message")]
+    print(" - ".join(p for p in parts if p) or "ok")
+else:
+    print(response.get("message") or "failed without a message")
+' <<<"${1}"
+}
+
+# A bwdc that died by signal - the unit's sandbox killing it, say - never
+# answered at all, and that is a different failure from one it reported.
+# Said so explicitly, because verify.sh keys on it.
+bwdc_failure() { # bwdc_failure <exit status> <output>
+	if [ "${1}" -gt 128 ]; then
+		echo "bwdc was killed by signal $((${1} - 128)) before it could answer"
+	else
+		response_message "${2}"
+	fi
+}
+
+write_state() { # write_state <ok|failed> <message>
+	python3 - "${STATE}" "$1" "$2" <<'PY'
+import datetime
+import json
+import os
+import re
+import sys
+
+path, result, message = sys.argv[1:4]
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+state = {}
+if os.path.exists(path):
+    try:
+        with open(path) as handle:
+            state = json.load(handle)
+    except ValueError:
+        state = {}
+state["last_run"] = now
+state["last_message"] = message
+if result == "ok":
+    state["last_success"] = now
+    state["consecutive_failures"] = 0
+    counts = re.search(r"(\d+)\s+groups?.*?(\d+)\s+users?", message)
+    if counts:
+        state["groups"] = int(counts.group(1))
+        state["users"] = int(counts.group(2))
+else:
+    state["last_failure"] = now
+    state["consecutive_failures"] = int(state.get("consecutive_failures", 0)) + 1
+tmp = path + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump(state, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+}
+
+print_test_summary() { # print_test_summary <bwdc test --response output>
+	python3 -c '
+import json
+import sys
+
+try:
+    response = json.loads(sys.stdin.read())
+except ValueError:
+    print("  (unreadable test output)")
+    raise SystemExit(0)
+data = response.get("data") or {}
+
+
+def names(entries, key):
+    return [str(e.get(key) or e.get("externalId") or "?") for e in entries or []]
+
+
+for label, key, field in (("Groups", "groups", "name"),
+                          ("Users to invite", "enabledUsers", "email"),
+                          ("Users disabled in Entra", "disabledUsers", "email"),
+                          ("Users removed in Entra", "deletedUsers", "email")):
+    items = names(data.get(key), field)
+    print("  %-26s %d" % (label, len(items)))
+    for item in items[:15]:
+        print("      %s" % item)
+    if len(items) > 15:
+        print("      ... %d more" % (len(items) - 15))
+' <<<"${1}"
+}
+
+# ---------------------------------------------------------------------------
+# run: what the service unit executes, as the sync account.
+# ---------------------------------------------------------------------------
+cmd_run() {
+	configured || die "not configured; run: vaultwarden-dirsync setup" 2
+	local -a environment
+	mapfile -t environment < <(bwdc_environment)
+	export "${environment[@]}"
+	# BW_CLIENTID and BW_CLIENTSECRET, read by `bwdc login` from the
+	# environment so the secret is never an argument.
+	set -a
+	# shellcheck disable=SC1090
+	. "${CREDENTIALS}"
+	set +a
+
+	local output message rc
+	echo "vaultwarden-dirsync: logging in to the organization ..."
+	rc=0
+	output="$("${BWDC}" --response --nointeraction login 2>&1)" || rc=$?
+	if [ "${rc}" -ne 0 ]; then
+		message="login failed: $(bwdc_failure "${rc}" "${output}")"
+		write_state failed "${message}"
+		echo "vaultwarden-dirsync: ${message}" >&2
+		exit 1
+	fi
+
+	echo "vaultwarden-dirsync: syncing ..."
+	rc=0
+	output="$("${BWDC}" --response --nointeraction sync 2>&1)" || rc=$?
+	if [ "${rc}" -ne 0 ]; then
+		message="sync failed: $(bwdc_failure "${rc}" "${output}")"
+		write_state failed "${message}"
+		"${BWDC}" --quiet --nointeraction logout >/dev/null 2>&1 || true
+		echo "vaultwarden-dirsync: ${message}" >&2
+		exit 1
+	fi
+	message="$(response_message "${output}")"
+	# Best effort: bwdc 2026.10.0 can fail its logout on a lock file after a
+	# successful sync, and the next run logs in afresh regardless.
+	"${BWDC}" --quiet --nointeraction logout >/dev/null 2>&1 || true
+	write_state ok "${message}"
+	echo "vaultwarden-dirsync: ${message}"
+}
+
+# ---------------------------------------------------------------------------
+# setup
+# ---------------------------------------------------------------------------
+read_secret() { # read_secret <label> <file or empty> -> stdout
+	local value
+	if [ -n "${2}" ]; then
+		[ -r "${2}" ] || die "cannot read ${2}"
+		value="$(head -n 1 "${2}" | tr -d '\r\n')"
+	else
+		[ -t 0 ] || die "${1}: no file given and no terminal to prompt on"
+		read -r -s -p "${1}: " value </dev/tty
+		echo >&2
+	fi
+	[ -n "${value}" ] || die "${1} is empty"
+	case "${value}" in
+	*[[:cntrl:]]*) die "${1} contains a control character" ;;
+	esac
+	printf '%s' "${value}"
+}
+
+cmd_setup() {
+	require_root setup "$@"
+	local tenant='' application_id='' org_client_id='' entra_secret_file='' org_secret_file=''
+	local groups=false user_filter='' group_filter='' remove_disabled=true overwrite=false
+	local large=false interval=15 assume_yes=false
+	while [ $# -gt 0 ]; do
+		case "${1}" in
+		--tenant) tenant="${2:-}"; shift 2 ;;
+		--application-id) application_id="${2:-}"; shift 2 ;;
+		--org-client-id) org_client_id="${2:-}"; shift 2 ;;
+		--entra-secret-file) entra_secret_file="${2:-}"; shift 2 ;;
+		--org-secret-file) org_secret_file="${2:-}"; shift 2 ;;
+		--groups) groups=true; shift ;;
+		--user-filter) user_filter="${2:-}"; shift 2 ;;
+		--group-filter) group_filter="${2:-}"; shift 2 ;;
+		--keep-disabled) remove_disabled=false; shift ;;
+		--overwrite-existing) overwrite=true; shift ;;
+		--large-import) large=true; shift ;;
+		--interval) interval="${2:-}"; shift 2 ;;
+		--yes) assume_yes=true; shift ;;
+		-h | --help) usage; exit 0 ;;
+		*) usage >&2; die "unknown option ${1}" 2 ;;
+		esac
+	done
+
+	[ -x "${BWDC}" ] || die "${BWDC} is missing; this image was built without the Directory Connector"
+	[ -f "${APPLIANCE_STATE}" ] || die "the appliance is not bootstrapped yet"
+	local url fqdn
+	url="$(json_get "${APPLIANCE_STATE}" url)"
+	fqdn="$(json_get "${APPLIANCE_STATE}" fqdn)"
+	[ -n "${url}" ] && [ -n "${fqdn}" ] || die "no URL in ${APPLIANCE_STATE}; is the appliance bootstrapped?"
+
+	[[ "${tenant}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$ ]] ||
+		die "--tenant must be the tenant's hostname (contoso.onmicrosoft.com) or its id" 2
+	[[ "${application_id}" =~ ^[0-9a-fA-F-]{36}$ ]] ||
+		die "--application-id must be the app registration's Application (client) ID, a UUID" 2
+	[[ "${org_client_id}" =~ ^organization\.[0-9a-fA-F-]{36}$ ]] ||
+		die "--org-client-id must look like organization.<uuid> (the organization's API key client_id)" 2
+	{ [[ "${interval}" =~ ^[0-9]+$ ]] && [ "${interval}" -ge 5 ] && [ "${interval}" -le 1440 ]; } ||
+		die "--interval is minutes, 5 to 1440" 2
+	local filter
+	for filter in "${user_filter}" "${group_filter}"; do
+		case "${filter}" in
+		*[[:cntrl:]]*) die "a filter contains a control character" 2 ;;
+		esac
+	done
+	if [ "${groups}" = true ] && [ "$(json_get "${APPLIANCE_STATE}" org_groups)" != 'true' ]; then
+		die "--groups needs Vaultwarden's group support, which this appliance was deployed without.
+  Set vaultwarden.org-groups to true in the deploy form (vCenter: Configure,
+  vApp Options), power-cycle, and run setup again - or leave --groups out:
+  users are still synced, and the organization's collections are then assigned
+  to members directly."
+	fi
+	# The connector reaches the appliance by its own name. A site whose DNS
+	# does not resolve that name from the appliance itself would fail at the
+	# first login with nothing better than "fetch failed".
+	getent hosts "${fqdn}" >/dev/null 2>&1 ||
+		die "${fqdn} does not resolve on this appliance; fix DNS (or /etc/hosts) first - the connector connects to ${url}"
+
+	local entra_secret org_secret
+	entra_secret="$(read_secret 'Entra ID client secret' "${entra_secret_file}")"
+	org_secret="$(read_secret 'Organization API client_secret' "${org_secret_file}")"
+
+	echo "vaultwarden-dirsync: configuring the connector for ${url} ..."
+	if configured; then
+		echo "  (replacing the existing configuration; the timer is stopped meanwhile)"
+		systemctl stop "${TIMER}" >/dev/null 2>&1 || true
+	fi
+	# Always a fresh state file. bwdc 2026.6 changed its layout and does not
+	# migrate older files - an inherited one is how a connector silently ends
+	# up talking to Bitwarden's cloud instead of this appliance.
+	rm -rf "${APPDATA}" "${CREDENTIALS}" "${STATE}"
+	install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${ROOT}" "${APPDATA}"
+
+	as_service_user "${BWDC}" --quiet --nointeraction config server "${url}"
+	as_service_user "${BWDC}" --quiet --nointeraction config directory 1
+	# The settings bwdc's config command has no verb for are written into
+	# its state file directly, in the flat layout of the pinned release
+	# (libs/models/state.model.ts: directoryEntra, sync). The identity
+	# fields go in before the secret so that bwdc keeps one configuration id
+	# for the pair.
+	as_service_user python3 - "${DATA_JSON}" "${tenant}" "${application_id}" \
+		"${groups}" "${user_filter}" "${group_filter}" "${remove_disabled}" \
+		"${overwrite}" "${large}" "${interval}" <<'PY'
+import json
+import os
+import sys
+
+(path, tenant, application_id, groups, user_filter, group_filter,
+ remove_disabled, overwrite, large, interval) = sys.argv[1:11]
+with open(path) as handle:
+    data = json.load(handle)
+entra = data.get("directoryEntra") or {}
+entra.update({
+    "identityAuthority": "login.microsoftonline.com",
+    "tenant": tenant,
+    "applicationId": application_id,
+})
+data["directoryEntra"] = entra
+data["directoryType"] = 1
+sync = data.get("sync") or {}
+sync.update({
+    "users": True,
+    "groups": groups == "true",
+    "interval": int(interval),
+    "userFilter": user_filter,
+    "groupFilter": group_filter,
+    "removeDisabled": remove_disabled == "true",
+    "overwriteExisting": overwrite == "true",
+    "largeImport": large == "true",
+    "inviteUsersAfterProvisioning": True,
+})
+data["sync"] = sync
+tmp = path + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+	# Secrets reach bwdc through files it reads itself, never as arguments.
+	local secret_file
+	secret_file="$(mktemp -p "${ROOT}")"
+	chown "${SERVICE_USER}:${SERVICE_USER}" "${secret_file}"
+	chmod 0600 "${secret_file}"
+	printf '%s\n' "${entra_secret}" >"${secret_file}"
+	as_service_user "${BWDC}" --quiet --nointeraction config entra.key --secretfile "${secret_file}"
+	rm -f "${secret_file}"
+	as_service_user "${BWDC}" --quiet --nointeraction config sync.inviteusersafterprovisioning true
+
+	# Sourced by bash (here and in the unit), so the secret is single-quoted
+	# with any quote of its own escaped; the client id was validated above.
+	printf "BW_CLIENTID=%s\nBW_CLIENTSECRET='%s'\n" "${org_client_id}" \
+		"${org_secret//\'/\'\\\'\'}" >"${CREDENTIALS}"
+	chown "${SERVICE_USER}:${SERVICE_USER}" "${CREDENTIALS}"
+	chmod 0600 "${CREDENTIALS}"
+	unset entra_secret org_secret
+
+	echo "vaultwarden-dirsync: logging in to the organization at ${url} ..."
+	local output
+	if ! output="$(as_service_user --credentials "${BWDC}" --response --nointeraction login 2>&1)"; then
+		echo "vaultwarden-dirsync: login failed: $(response_message "${output}")" >&2
+		echo "  Check the organization API key (web vault: the organization's Settings," >&2
+		echo "  Organization info, View API key) and that ${url} is served." >&2
+		rm -f "${CREDENTIALS}"
+		exit 1
+	fi
+
+	echo "vaultwarden-dirsync: testing the directory (nothing is changed) ..."
+	if ! output="$(as_service_user "${BWDC}" --response --nointeraction test 2>&1)"; then
+		echo "vaultwarden-dirsync: the directory test failed: $(response_message "${output}")" >&2
+		echo "  Check the tenant, the Application ID, the client secret, and that the app" >&2
+		echo "  registration has User.Read.All and Group.Read.All (application) with admin consent." >&2
+		rm -f "${CREDENTIALS}"
+		exit 1
+	fi
+	print_test_summary "${output}"
+
+	# 15 minutes is the shipped default; another interval is a timer
+	# drop-in, so the unit file itself never changes.
+	install -d -m 0755 "$(dirname "${TIMER_DROPIN}")"
+	printf '# Written by vaultwarden-dirsync setup.\n[Timer]\nOnUnitActiveSec=\nOnUnitActiveSec=%smin\n' \
+		"${interval}" >"${TIMER_DROPIN}"
+	chmod 0644 "${TIMER_DROPIN}"
+	systemctl daemon-reload
+
+	if [ "${assume_yes}" != true ]; then
+		echo
+		echo "The first sync invites every user listed above to the organization"
+		[ "${overwrite}" = true ] && echo "and REMOVES every synced member the directory did not return,"
+		echo "then the timer repeats it every ${interval} minutes."
+		read -r -p "Run the first sync and enable the timer? [y/N] " answer </dev/tty
+		case "${answer}" in
+		y | Y | yes | YES) ;;
+		*)
+			echo "vaultwarden-dirsync: configured but not enabled. Later: vaultwarden-dirsync enable"
+			exit 0
+			;;
+		esac
+	fi
+
+	echo "vaultwarden-dirsync: first sync ..."
+	cmd_sync
+	systemctl enable --now "${TIMER}" >/dev/null
+	echo "vaultwarden-dirsync: the timer is enabled (every ${interval} minutes)."
+	echo "  The configuration is part of every vaultwarden-backup."
+	echo "  Watch it: vaultwarden-status, or journalctl -u vaultwarden-dirsync"
+}
+
+# ---------------------------------------------------------------------------
+# the rest
+# ---------------------------------------------------------------------------
+cmd_status() {
+	if ! configured; then
+		echo "Directory sync: not configured (vaultwarden-dirsync setup)"
+		if [ -x "${BWDC}" ]; then
+			echo "  Directory Connector $(cat "$(dirname "${BWDC}")/VERSION" 2>/dev/null || echo '?') is installed"
+		fi
+		return 0
+	fi
+	local user_filter group_filter
+	user_filter="$(json_get "${DATA_JSON}" sync.userFilter)"
+	group_filter="$(json_get "${DATA_JSON}" sync.groupFilter)"
+	echo "Directory sync: Microsoft Entra ID -> $(json_get "${DATA_JSON}" environmentUrls.base)"
+	echo "  Tenant       $(json_get "${DATA_JSON}" directoryEntra.tenant)"
+	echo "  Application  $(json_get "${DATA_JSON}" directoryEntra.applicationId)"
+	echo "  Organization $(sed -n 's/^BW_CLIENTID=//p' "${CREDENTIALS}" 2>/dev/null)"
+	echo "  Users        $(json_get "${DATA_JSON}" sync.users) (filter: ${user_filter:-none})"
+	echo "  Groups       $(json_get "${DATA_JSON}" sync.groups) (filter: ${group_filter:-none})"
+	echo "  Revoke disabled: $(json_get "${DATA_JSON}" sync.removeDisabled); remove missing: $(json_get "${DATA_JSON}" sync.overwriteExisting); large import: $(json_get "${DATA_JSON}" sync.largeImport)"
+	local enabled active next
+	enabled="$(systemctl is-enabled "${TIMER}" 2>/dev/null || echo unknown)"
+	active="$(systemctl is-active "${TIMER}" 2>/dev/null || echo unknown)"
+	next="$(systemctl show "${TIMER}" -p NextElapseUSecRealtime --value 2>/dev/null || true)"
+	echo "  Timer        ${enabled}/${active}, every $(json_get "${DATA_JSON}" sync.interval) min${next:+, next ${next}}"
+	if [ -f "${STATE}" ]; then
+		local success failure failures users
+		success="$(json_get "${STATE}" last_success)"
+		failure="$(json_get "${STATE}" last_failure)"
+		failures="$(json_get "${STATE}" consecutive_failures)"
+		users="$(json_get "${STATE}" users)"
+		echo "  Last success ${success:-never}${users:+ ($(json_get "${STATE}" groups) groups, ${users} users)}"
+		if [ "${failures:-0}" -gt 0 ]; then
+			echo "  LAST RUN FAILED (${failures} in a row, ${failure}): $(json_get "${STATE}" last_message)"
+			echo "               journalctl -u vaultwarden-dirsync"
+		fi
+	else
+		echo "  Last success never (no run yet)"
+	fi
+}
+
+cmd_sync() {
+	require_root sync
+	configured || die "not configured; run: vaultwarden-dirsync setup" 2
+	# Through the unit, so a manual sync has the same account, environment and
+	# hardening as a scheduled one, and the same journal.
+	if ! systemctl start "${UNIT}"; then
+		echo "vaultwarden-dirsync: the sync failed: $(json_get "${STATE}" last_message)" >&2
+		echo "  journalctl -u vaultwarden-dirsync -n 50" >&2
+		exit 1
+	fi
+	echo "vaultwarden-dirsync: $(json_get "${STATE}" last_message)"
+}
+
+cmd_test() {
+	require_root test
+	configured || die "not configured; run: vaultwarden-dirsync setup" 2
+	local output
+	as_service_user --credentials "${BWDC}" --quiet --nointeraction login ||
+		die "login failed; check the organization API key"
+	if ! output="$(as_service_user "${BWDC}" --response --nointeraction test 2>&1)"; then
+		die "the directory test failed: $(response_message "${output}")"
+	fi
+	echo "What the directory returns (a sync would send this):"
+	print_test_summary "${output}"
+}
+
+cmd_resync() {
+	require_root resync
+	configured || die "not configured; run: vaultwarden-dirsync setup" 2
+	# Entra is read through Graph delta queries and the connector skips a
+	# request identical to its last one; after a restore, or after a member
+	# was removed by hand, both caches can hide what needs re-sending.
+	as_service_user "${BWDC}" --quiet --nointeraction clear-cache
+	echo "vaultwarden-dirsync: cache cleared; syncing everything ..."
+	cmd_sync
+}
+
+cmd_enable() {
+	require_root enable
+	configured || die "not configured; run: vaultwarden-dirsync setup" 2
+	systemctl enable --now "${TIMER}"
+	echo "vaultwarden-dirsync: timer enabled"
+}
+
+cmd_disable() {
+	require_root disable
+	systemctl disable --now "${TIMER}"
+	echo "vaultwarden-dirsync: timer disabled; the configuration is kept (vaultwarden-dirsync enable)"
+}
+
+cmd_remove() {
+	require_root remove
+	if [ "${1:-}" != '--yes' ]; then
+		read -r -p "Delete the directory sync configuration and its secrets? [y/N] " answer </dev/tty
+		case "${answer}" in
+		y | Y | yes | YES) ;;
+		*)
+			echo "Aborted."
+			exit 1
+			;;
+		esac
+	fi
+	systemctl disable --now "${TIMER}" >/dev/null 2>&1 || true
+	rm -rf "${APPDATA}" "${CREDENTIALS}" "${STATE}" "${TIMER_DROPIN}"
+	install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${APPDATA}"
+	systemctl daemon-reload
+	echo "vaultwarden-dirsync: removed. Members already in the organization stay; manage them in the web vault."
+}
+
+cmd_bwdc() {
+	require_root bwdc
+	[ "${1:-}" = '--' ] && shift
+	[ $# -gt 0 ] || die "usage: vaultwarden-dirsync bwdc -- <bwdc arguments>" 2
+	as_service_user "${BWDC}" "$@"
+}
+
+case "${1:-}" in
+setup)
+	shift
+	cmd_setup "$@"
+	;;
+run) cmd_run ;;
+status) cmd_status ;;
+test) cmd_test ;;
+sync) cmd_sync ;;
+resync) cmd_resync ;;
+enable) cmd_enable ;;
+disable) cmd_disable ;;
+remove)
+	shift
+	cmd_remove "$@"
+	;;
+bwdc)
+	shift
+	cmd_bwdc "$@"
+	;;
+-h | --help) usage ;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac

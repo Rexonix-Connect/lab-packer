@@ -445,6 +445,13 @@ def build_settings(props, fqdn, have_secret):
         'SHOW_PASSWORD_HINT': 'false',
         'ORG_EVENTS_ENABLED': 'true',
         'EVENTS_DAYS_RETAIN': '365',
+        # Upstream ships groups off and marks them beta. They are what
+        # vaultwarden-dirsync mirrors Entra ID groups into, so the deploy
+        # form can turn them on; collections are assigned to members
+        # directly otherwise.
+        'ORG_GROUPS_ENABLED': 'true' if parse_bool(
+            prop(props, 'vaultwarden.org-groups'),
+            'vaultwarden.org-groups') else 'false',
 
         'ENABLE_WEBSOCKET': 'true',
         'WEB_VAULT_ENABLED': 'true',
@@ -852,9 +859,12 @@ NO_PROXY_RE = re.compile(r'^[A-Za-z0-9.*_-]+(?:/\d{1,3})?$')
 
 ENVIRONMENT = '/etc/environment'
 APT_PROXY = '/etc/apt/apt.conf.d/95vaultwarden-proxy'
-# dockerd needs it to pull an upgrade; nothing else here makes outbound HTTP
-# requests outside the container.
-PROXY_DROPINS = ('/etc/systemd/system/docker.service.d/30-proxy.conf',)
+# dockerd needs it to pull an upgrade, and the directory sync to reach
+# Microsoft Graph. Note that bwdc honours only the lower-case variables and
+# has no bypass list at all: with a proxy set, its connection to the
+# appliance's own name also goes through the proxy.
+PROXY_DROPINS = ('/etc/systemd/system/docker.service.d/30-proxy.conf',
+                 '/etc/systemd/system/vaultwarden-dirsync.service.d/30-proxy.conf')
 MARK_BEGIN = '# --- vaultwarden-firstboot proxy (managed) ---'
 MARK_END = '# --- end vaultwarden-firstboot proxy ---'
 
@@ -933,7 +943,10 @@ def write_proxy(props):
             write_file(path,
                        '# Written by vaultwarden-firstboot.py.\n[Service]\n'
                        'Environment=HTTP_PROXY=%s\nEnvironment=HTTPS_PROXY=%s\n'
-                       'Environment=NO_PROXY=%s\n' % (proxy, proxy, no_proxy),
+                       'Environment=NO_PROXY=%s\n'
+                       'Environment=http_proxy=%s\nEnvironment=https_proxy=%s\n'
+                       'Environment=no_proxy=%s\n'
+                       % (proxy, proxy, no_proxy, proxy, proxy, no_proxy),
                        0o600)
     changed = snapshot((ENVIRONMENT, APT_PROXY) + PROXY_DROPINS) != before
     if changed:
@@ -1123,6 +1136,9 @@ def apply_configuration(props, first_boot):
         'self_signed_certificate': not operator_certificate,
         'smtp': 'SMTP_HOST' in settings,
         'sso': settings.get('SSO_ENABLED') == 'true',
+        # vaultwarden-dirsync setup --groups checks this before mirroring
+        # groups into an instance that has them off.
+        'org_groups': settings['ORG_GROUPS_ENABLED'] == 'true',
         'org_creation_users': settings['ORG_CREATION_USERS'],
         'admin_access': ', '.join(['loopback'] + admin_allow),
         # vaultwarden-status keys off the CLOSED prefix.

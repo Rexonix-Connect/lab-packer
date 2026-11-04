@@ -6,7 +6,8 @@ set -euo pipefail
 echo '> Installing the operator CLIs ...'
 for tool in vaultwarden-status vaultwarden-guard vaultwarden-credentials \
 	vaultwarden-admin-token vaultwarden-backup vaultwarden-restore \
-	vaultwarden-upgrade vaultwarden-tls vaultwarden-datadisk-grow; do
+	vaultwarden-upgrade vaultwarden-tls vaultwarden-datadisk-grow \
+	vaultwarden-dirsync; do
 	install -m 0755 -o root -g root "${PAYLOAD_DIR}/bin/${tool}" "/usr/local/sbin/${tool}"
 	bash -n "/usr/local/sbin/${tool}"
 done

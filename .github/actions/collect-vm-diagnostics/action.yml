@@ -121,6 +121,12 @@ runs:
           journalctl --no-pager -b -u vaultwarden-bootstrap -u vaultwarden-reconcile             -u vaultwarden -u docker | tail -n 300
           endsection
 
+          section 'vaultwarden directory sync'
+          /usr/local/sbin/vaultwarden-dirsync status 2>&1
+          systemctl --no-pager --full status vaultwarden-dirsync.timer vaultwarden-dirsync.service 2>&1 | head -n 60
+          journalctl --no-pager -u vaultwarden-dirsync | tail -n 100
+          endsection
+
           section 'vaultwarden storage and nginx'
           findmnt /srv/vaultwarden
           grep -n 'srv/vaultwarden' /etc/fstab

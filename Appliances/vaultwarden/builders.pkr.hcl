@@ -48,6 +48,8 @@ build {
     environment_vars = [
       "VAULTWARDEN_VERSION=${var.vaultwardenVersion}",
       "VAULTWARDEN_IMAGE=${var.vaultwardenImageRepository}:${var.vaultwardenVersion}@${var.vaultwardenImageDigest}",
+      "DIRECTORY_CONNECTOR_VERSION=${var.directoryConnectorVersion}",
+      "DIRECTORY_CONNECTOR_SHA256=${var.directoryConnectorSha256}",
       "BUILD_USERNAME=${var.buildUsername}",
       "PAYLOAD_DIR=/tmp/vaultwarden-appliance",
     ]
@@ -63,6 +65,9 @@ build {
       "./files/install-docker.sh",
       "./files/install-vaultwarden.sh",
       "./files/install-ops.sh",
+      # After install-ops.sh, which installs the vaultwarden-dirsync command
+      # the connector is driven by.
+      "./files/install-directory-connector.sh",
       "./files/install-firstboot.sh",
     ]
   }
@@ -73,6 +78,7 @@ build {
     execute_command = "{{.Vars}} sudo -n -E bash '{{.Path}}'"
     environment_vars = [
       "VAULTWARDEN_VERSION=${var.vaultwardenVersion}",
+      "DIRECTORY_CONNECTOR_VERSION=${var.directoryConnectorVersion}",
       "BUILD_USERNAME=${var.buildUsername}",
     ]
     scripts           = ["./files/verify.sh"]
