@@ -70,18 +70,40 @@ install -D -m 0644 /dev/stdin /etc/ssh/sshd_config.d/00-no-password-auth.conf <<
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 SSHD
+# sshd -T refuses to run without a host key and without its privilege
+# separation directory. The keys exist on a booted clone, but /run/sshd is
+# ssh.service's RuntimeDirectory on 24.04: an openssh-server upgrade during the
+# build restarts ssh through its socket unit, which can leave ssh.service
+# stopped - and the directory gone - while Packer's existing connection carries
+# on. The shipped template is unaffected (ssh.socket starts the service on the
+# first connection); only this check needs the directory to exist. Found on
+# the Vaultwarden appliance's first build, which shares this script.
 ssh-keygen -A >/dev/null
-effective="$(sshd -T 2>/dev/null || true)"
+install -d -m 0755 /run/sshd
+sshd_errors="$(mktemp)"
+effective="$(sshd -T 2>"${sshd_errors}" || true)"
 if ! grep -qx 'passwordauthentication no' <<<"${effective}"; then
 	echo '> SSH password authentication is still enabled; refusing to export the template' >&2
-	grep -iE 'passwordauthentication|kbdinteractive' <<<"${effective}" >&2 || \
-		echo '> sshd -T produced no output at all' >&2
+	grep -iE 'passwordauthentication|kbdinteractive' <<<"${effective}" >&2 || {
+		echo '> sshd -T produced no output; its errors were:' >&2
+		cat "${sshd_errors}" >&2
+	}
+	rm -f "${sshd_errors}"
 	exit 1
 fi
+rm -f "${sshd_errors}"
 rm -f /etc/ssh/ssh_host_*
 
 echo '> Removing the build account ...'
-build_user="${BUILD_USERNAME:-pkrbuild}"
+# Passed by the shutdown command; SUDO_USER is the same account by another
+# route (this script runs under the build account's own sudo), and pkrbuild
+# only the last resort. A wrong guess here would export the build account and
+# its authorized key inside the template.
+build_user="${BUILD_USERNAME:-${SUDO_USER:-pkrbuild}}"
+if [ "${build_user}" = 'root' ]; then
+	echo '> refusing to treat root as the build account' >&2
+	exit 1
+fi
 # Drop the authorized key first, so even a failure below cannot leave an
 # account the build runner's key can log into.
 rm -f "/home/${build_user}/.ssh/authorized_keys"
