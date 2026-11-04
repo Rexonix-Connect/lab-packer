@@ -95,6 +95,8 @@ login)
 		echo '{"success":false,"message":"Invalid client."}'
 		exit 1
 	fi
+	# What a sandbox that kills Node looks like from the outside.
+	[ "${FAKE_LOGIN_KILLED:-}" = '1' ] && kill -s KILL $$
 	[ -n "${BW_CLIENTID:-}" ] && [ -n "${BW_CLIENTSECRET:-}" ] || { echo '{"success":false,"message":"Client ID is required."}'; exit 1; }
 	echo "apikey-via-env ${BW_CLIENTID}" >>"${FAKE_LOG}"
 	echo '{"success":true,"data":{"object":"message","title":"You are logged in!"}}'
@@ -218,7 +220,7 @@ reset() {
 	mkdir -p "${VAULTWARDEN_DIRSYNC_ROOT}/appdata"
 	: >"${FAKE_LOG}"
 	: >"${SYSTEMCTL_LOG}"
-	unset FAKE_LOGIN_FAIL FAKE_SYNC_FAIL FAKE_NO_DNS FAKE_LOGOUT_RC
+	unset FAKE_LOGIN_FAIL FAKE_LOGIN_KILLED FAKE_SYNC_FAIL FAKE_NO_DNS FAKE_LOGOUT_RC
 }
 DATA="${VAULTWARDEN_DIRSYNC_ROOT}/appdata/data.json"
 CREDENTIALS="${VAULTWARDEN_DIRSYNC_ROOT}/credentials.env"
@@ -358,6 +360,10 @@ grep -q 'login failed: Invalid client' <<<"$(field "${STATE}" last_message)"
 check "  and says it was the login" 0 "$?"
 FAKE_LOGOUT_RC=1 dirsync run >/dev/null 2>&1
 check "a failing logout (bwdc 2026.10.0) does not fail a good sync" 0 "$?"
+FAKE_LOGIN_KILLED=1 dirsync run >/dev/null 2>&1
+check "a bwdc killed by signal fails the run" 1 "$?"
+grep -q 'login failed: bwdc was killed by signal 9' <<<"$(field "${STATE}" last_message)"
+check "  and is reported as a kill, not as a connector response" 0 "$?" "$(field "${STATE}" last_message)"
 
 #
 # resync, enable, disable, bwdc passthrough, remove.

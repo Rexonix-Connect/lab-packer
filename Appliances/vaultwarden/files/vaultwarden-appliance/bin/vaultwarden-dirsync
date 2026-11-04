@@ -164,6 +164,17 @@ else:
 ' <<<"${1}"
 }
 
+# A bwdc that died by signal - the unit's sandbox killing it, say - never
+# answered at all, and that is a different failure from one it reported.
+# Said so explicitly, because verify.sh keys on it.
+bwdc_failure() { # bwdc_failure <exit status> <output>
+	if [ "${1}" -gt 128 ]; then
+		echo "bwdc was killed by signal $((${1} - 128)) before it could answer"
+	else
+		response_message "${2}"
+	fi
+}
+
 write_state() { # write_state <ok|failed> <message>
 	python3 - "${STATE}" "$1" "$2" <<'PY'
 import datetime
@@ -247,18 +258,22 @@ cmd_run() {
 	. "${CREDENTIALS}"
 	set +a
 
-	local output message
+	local output message rc
 	echo "vaultwarden-dirsync: logging in to the organization ..."
-	if ! output="$("${BWDC}" --response --nointeraction login 2>&1)"; then
-		message="login failed: $(response_message "${output}")"
+	rc=0
+	output="$("${BWDC}" --response --nointeraction login 2>&1)" || rc=$?
+	if [ "${rc}" -ne 0 ]; then
+		message="login failed: $(bwdc_failure "${rc}" "${output}")"
 		write_state failed "${message}"
 		echo "vaultwarden-dirsync: ${message}" >&2
 		exit 1
 	fi
 
 	echo "vaultwarden-dirsync: syncing ..."
-	if ! output="$("${BWDC}" --response --nointeraction sync 2>&1)"; then
-		message="sync failed: $(response_message "${output}")"
+	rc=0
+	output="$("${BWDC}" --response --nointeraction sync 2>&1)" || rc=$?
+	if [ "${rc}" -ne 0 ]; then
+		message="sync failed: $(bwdc_failure "${rc}" "${output}")"
 		write_state failed "${message}"
 		"${BWDC}" --quiet --nointeraction logout >/dev/null 2>&1 || true
 		echo "vaultwarden-dirsync: ${message}" >&2

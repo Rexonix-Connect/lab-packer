@@ -262,15 +262,28 @@ if [ "${result}" != 'exit-code' ]; then
 	journalctl --no-pager -u vaultwarden-dirsync -n 40 || true
 	fail "the sync unit ended with Result=${result}; a signal means the sandbox killed bwdc"
 fi
+# Result=exit-code is the wrapper's exit, not bwdc's: the wrapper exits 1
+# whether bwdc answered or was killed underneath it. So the journal must
+# hold a login failure that carries bwdc's own response - a sandbox that
+# kills Node leaves "killed by signal", and a bwdc that printed nothing
+# leaves "no output", and both fail the build.
 dirsync_journal="$(journalctl --no-pager -u vaultwarden-dirsync -b)"
-grep -q 'login failed' <<<"${dirsync_journal}" || {
+login_line="$(grep 'login failed:' <<<"${dirsync_journal}" | tail -n 1 || true)"
+[ -n "${login_line}" ] || {
 	echo "${dirsync_journal}" | tail -n 40
 	fail 'the sync unit did not get as far as a login attempt'
 }
+case "${login_line}" in
+*'killed by signal'* | *'no output'*)
+	echo "${dirsync_journal}" | tail -n 40
+	fail "bwdc did not answer under the unit sandbox: ${login_line}"
+	;;
+esac
+echo "> bwdc answered under the sandbox: ${login_line#*login failed: }"
 systemctl reset-failed vaultwarden-dirsync.service || true
 rm -rf "${DIRSYNC_ROOT}/appdata" "${DIRSYNC_ROOT}/credentials.env" "${DIRSYNC_ROOT}/state.json"
 install -d -m 0700 -o vaultwarden-dirsync -g vaultwarden-dirsync "${DIRSYNC_ROOT}/appdata"
-echo '> bwdc ran under the unit sandbox and failed cleanly, as it should with no server.'
+echo '> bwdc ran under the unit sandbox and reported the failure itself, as it should with no server.'
 systemctl is-active fail2ban.service >/dev/null || systemctl start fail2ban.service
 # Jails come up asynchronously after the service is active.
 for jail in vaultwarden vaultwarden-admin; do
