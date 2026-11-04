@@ -81,13 +81,30 @@ install -D -m 0644 /dev/stdin /etc/ssh/sshd_config.d/00-no-password-auth.conf <<
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 SSHD
-effective="$(sshd -T 2>/dev/null || true)"
+# sshd -T refuses to run without a host key and without its privilege
+# separation directory. The keys exist on a booted clone, but /run/sshd is
+# ssh.service's RuntimeDirectory on 24.04: the build's openssh-server upgrade
+# restarts ssh through its socket unit, which can leave ssh.service stopped -
+# and the directory gone - while Packer's existing connection carries on. The
+# shipped template is unaffected (ssh.socket starts the service on the first
+# connection); only this check needs the directory to exist.
+ssh-keygen -A >/dev/null
+install -d -m 0755 /run/sshd
+sshd_errors="$(mktemp)"
+effective="$(sshd -T 2>"${sshd_errors}" || true)"
 if ! grep -qx 'passwordauthentication no' <<<"${effective}"; then
 	echo '> SSH password authentication is still enabled; refusing to export the template' >&2
-	grep -iE 'passwordauthentication|kbdinteractive' <<<"${effective}" >&2 || \
-		echo '> sshd -T produced no output at all' >&2
+	grep -iE 'passwordauthentication|kbdinteractive' <<<"${effective}" >&2 || {
+		echo '> sshd -T produced no output; its errors were:' >&2
+		cat "${sshd_errors}" >&2
+		ls -la /etc/ssh /run/sshd >&2 || true
+		systemctl --no-pager status ssh.service ssh.socket >&2 || true
+	}
+	rm -f "${sshd_errors}"
 	exit 1
 fi
+rm -f "${sshd_errors}"
+echo '> sshd: password authentication disabled.'
 
 echo '> Asserting the docker group is empty ...'
 if [ -n "$(getent group docker | cut -d: -f4)" ]; then
