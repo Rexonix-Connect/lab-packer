@@ -19,6 +19,7 @@ fail() {
 	echo '> --- diagnostics ---'
 	systemctl --no-pager --full status vaultwarden nginx 'postgresql@*' 2>&1 | tail -n 80 || true
 	journalctl --no-pager -u vaultwarden -n 100 || true
+	journalctl --no-pager -u fail2ban -n 30 || true
 	ss -ltnp || true
 	tail -n 30 /var/log/nginx/vaultwarden-error.log /var/log/nginx/error.log 2>/dev/null || true
 	exit 1
@@ -70,7 +71,9 @@ alive 60 || fail 'Vaultwarden did not answer /alive through nginx'
 echo '> /alive answered through nginx.'
 
 echo '> Verifying what is served ...'
-reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk '{print $2}' || true)"
+# --version prints two lines, the server and the bundled web-vault; the first
+# is the one pinned here.
+reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk 'NR==1{print $2}' || true)"
 [ "${reported}" = "${VAULTWARDEN_VERSION}" ] ||
 	fail "the container reports Vaultwarden ${reported:-?}, expected ${VAULTWARDEN_VERSION}"
 echo "> Vaultwarden ${reported}"
@@ -214,9 +217,19 @@ for unit in vaultwarden.service nginx.service docker.service fail2ban.service \
 	vaultwarden-backup.timer vaultwarden-datadisk.service; do
 	systemctl is-enabled "${unit}" >/dev/null || fail "${unit} is not enabled"
 done
-systemctl is-active fail2ban.service >/dev/null || systemctl restart fail2ban.service
-fail2ban-client status vaultwarden >/dev/null || fail 'the vaultwarden fail2ban jail is not running'
-fail2ban-client status vaultwarden-admin >/dev/null || fail 'the vaultwarden-admin fail2ban jail is not running'
+systemctl is-active fail2ban.service >/dev/null || systemctl start fail2ban.service
+# Jails come up asynchronously after the service is active.
+for jail in vaultwarden vaultwarden-admin; do
+	for _ in $(seq 1 30); do
+		fail2ban-client status "${jail}" >/dev/null 2>&1 && break
+		sleep 1
+	done
+	if ! fail2ban-client status "${jail}" >/dev/null 2>&1; then
+		journalctl --no-pager -u fail2ban -n 50 || true
+		fail2ban-client status || true
+		fail "the ${jail} fail2ban jail is not running"
+	fi
+done
 if journalctl -b --no-pager | grep -iE 'ordering cycle|deleted to break'; then
 	fail 'systemd reported an ordering cycle'
 fi

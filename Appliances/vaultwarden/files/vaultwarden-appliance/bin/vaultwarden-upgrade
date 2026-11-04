@@ -94,7 +94,8 @@ EOF
 
 echo "vaultwarden-upgrade: restarting on ${version} ..."
 systemctl restart vaultwarden.service || rollback "vaultwarden.service did not start on ${version}"
-reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk '{print $2}' || true)"
+# --version prints two lines, the server and the bundled web-vault.
+reported="$(docker exec vaultwarden /vaultwarden --version 2>/dev/null | awk 'NR==1{print $2}' || true)"
 [ "${reported}" = "${version}" ] || rollback "the container reports ${reported:-nothing}, expected ${version}"
 code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/alive || true)"
 [ "${code}" = '200' ] || rollback "/alive answered ${code:-000} through nginx"

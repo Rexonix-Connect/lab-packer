@@ -13,7 +13,15 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 # The base image runs unattended-upgrades, which is very likely to hold the
 # dpkg lock on a freshly booted clone; wait for it instead of racing it.
-APT_OPTS=(-o DPkg::Lock::Timeout=600 -o APT::Get::Always-Include-Phased-Updates=true)
+#
+# confdef/confold: the hardened base modifies conffiles that packages later
+# ship new versions of - /etc/issue.net (its SSH pre-auth banner) came with
+# base-files 13ubuntu10.5 - and DEBIAN_FRONTEND=noninteractive does not cover
+# dpkg's own conffile prompt, which then dies with "end of file on stdin".
+# Keeping the installed version is also what the base's own
+# unattended-upgrades does, so a deployed appliance behaves the same way.
+APT_OPTS=(-o DPkg::Lock::Timeout=600 -o APT::Get::Always-Include-Phased-Updates=true
+	-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 echo '> Updating package lists (the base template ships with them cleaned) ...'
 apt-get "${APT_OPTS[@]}" update
