@@ -77,8 +77,62 @@ if [ "${target}" != '--reinstall' ]; then
 	git -C "${NETBOX_ROOT}" checkout --quiet "tags/${target}"
 fi
 
+# --- requirements-workaround begin ---
+# Upstream dependency drift, and the pin that works around it, kept in step
+# with the release about to be installed. NetBox 4.6 pins mkdocstrings 1.0.6,
+# whose documentation build broke with pymdown-extensions 12.2
+# (netbox-community/netbox#23376); the 4.6 line ended without the fix, so the
+# image build pins mkdocstrings 1.0.7 in local_requirements.txt, which
+# upgrade.sh installs on top of requirements.txt (install-netbox.sh, same tag,
+# same condition - keep them identical). A release that pins mkdocstrings
+# itself to something newer - 4.7.4 pins 1.0.8 - would be downgraded by that
+# same line, so it is removed for those. The operator's own lines are never
+# touched. Lifted out by tests/test_upgrade_workaround.sh, by these markers.
+WORKAROUND_TAG='lab-packer workaround: netbox-community/netbox#23376'
+WORKAROUND_LINE="mkdocstrings==1.0.7  # ${WORKAROUND_TAG}"
+workaround_removed=0
+reconcile_requirements_workarounds() {
+	local requirements="${NETBOX_ROOT}/local_requirements.txt"
+	local kept
+	if grep -qE '^mkdocstrings==1\.0\.6[[:space:]]*$' "${NETBOX_ROOT}/requirements.txt"; then
+		if ! grep -qF -- "${WORKAROUND_TAG}" "${requirements}" 2>/dev/null; then
+			echo "netbox-upgrade: this release pins mkdocstrings 1.0.6, whose documentation build is broken upstream;"
+			echo "  pinning 1.0.7 in local_requirements.txt (netbox-community/netbox#23376)"
+			printf '%s\n' "${WORKAROUND_LINE}" >>"${requirements}"
+		fi
+	elif grep -qF -- "${WORKAROUND_TAG}" "${requirements}" 2>/dev/null; then
+		echo "netbox-upgrade: this release pins mkdocstrings itself; dropping the 1.0.7 workaround from local_requirements.txt"
+		kept="$(grep -vF -- "${WORKAROUND_TAG}" "${requirements}" || true)"
+		# Written back in place rather than moved over, so the file keeps its
+		# owner and mode. An empty result stays an empty file, not a blank line.
+		if [ -n "${kept}" ]; then
+			printf '%s\n' "${kept}" >"${requirements}"
+		else
+			: >"${requirements}"
+		fi
+		workaround_removed=1
+	fi
+}
+# --- requirements-workaround end ---
+reconcile_requirements_workarounds
+
+rollback_hint() {
+	echo "Roll back with:"
+	echo "    git -C ${NETBOX_ROOT} checkout tags/${current} && ${NETBOX_ROOT}/upgrade.sh"
+	echo "    netbox-restore <the backup taken above>"
+	if [ "${workaround_removed}" -eq 1 ]; then
+		echo "  ${current} needs the mkdocstrings pin that was just dropped from local_requirements.txt,"
+		echo "  or its upgrade.sh fails in the documentation build; put it back first:"
+		echo "    printf '%s\\n' '${WORKAROUND_LINE}' >>${NETBOX_ROOT}/local_requirements.txt"
+	fi
+}
+
 echo "netbox-upgrade: running upgrade.sh ..."
-"${NETBOX_ROOT}/upgrade.sh"
+if ! "${NETBOX_ROOT}/upgrade.sh"; then
+	echo "netbox-upgrade: upgrade.sh failed." >&2
+	rollback_hint >&2
+	exit 1
+fi
 
 echo "netbox-upgrade: restarting services ..."
 systemctl restart netbox.service netbox-rq.service
@@ -92,12 +146,10 @@ for _ in $(seq 1 30); do
 done
 if [ "${code:-}" != '200' ]; then
 	echo "netbox-upgrade: NetBox did not come back (last HTTP status ${code:-none})." >&2
-	echo "Roll back with:" >&2
-	echo "    git -C ${NETBOX_ROOT} checkout tags/${current} && ${NETBOX_ROOT}/upgrade.sh" >&2
-	echo "    netbox-restore <the backup taken above>" >&2
+	rollback_hint >&2
 	exit 1
 fi
 
 netbox-status
 echo "netbox-upgrade: now running $(git -C "${NETBOX_ROOT}" describe --tags --always)"
-echo "Roll back with: git -C ${NETBOX_ROOT} checkout tags/${current} && ${NETBOX_ROOT}/upgrade.sh"
+rollback_hint
