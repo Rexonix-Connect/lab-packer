@@ -227,8 +227,12 @@ done
 	fail 'vaultwarden-dirsync.timer must ship disabled'
 [ "$(cat /opt/bitwarden-directory-connector/VERSION 2>/dev/null)" = "${DIRECTORY_CONNECTOR_VERSION}" ] ||
 	fail "the shipped Directory Connector is not ${DIRECTORY_CONNECTOR_VERSION}"
-vaultwarden-dirsync status | grep -q 'not configured' ||
-	fail 'vaultwarden-dirsync status does not report the sync as unconfigured'
+# Captured first: under pipefail, `status | grep -q` fails whenever grep
+# exits before status has written its second line (SIGPIPE), which it
+# often does.
+dirsync_status="$(vaultwarden-dirsync status)"
+grep -q 'not configured' <<<"${dirsync_status}" ||
+	fail "vaultwarden-dirsync status does not report the sync as unconfigured: ${dirsync_status}"
 if runuser -u vaultwarden-dirsync -- /usr/local/sbin/vaultwarden-dirsync run >/dev/null 2>&1; then
 	fail 'vaultwarden-dirsync run must refuse without a configuration'
 fi
@@ -258,8 +262,9 @@ if [ "${result}" != 'exit-code' ]; then
 	journalctl --no-pager -u vaultwarden-dirsync -n 40 || true
 	fail "the sync unit ended with Result=${result}; a signal means the sandbox killed bwdc"
 fi
-journalctl --no-pager -u vaultwarden-dirsync -b | grep -q 'login failed' || {
-	journalctl --no-pager -u vaultwarden-dirsync -n 40 || true
+dirsync_journal="$(journalctl --no-pager -u vaultwarden-dirsync -b)"
+grep -q 'login failed' <<<"${dirsync_journal}" || {
+	echo "${dirsync_journal}" | tail -n 40
 	fail 'the sync unit did not get as far as a login attempt'
 }
 systemctl reset-failed vaultwarden-dirsync.service || true
