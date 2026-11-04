@@ -79,6 +79,17 @@ build {
     expect_disconnect = true
   }
 
+  # Everything finalize.sh (the shutdown command, whose output Packer never
+  # shows) does not strictly have to do: a failure here is visible in the
+  # build log instead of being a silent 20-minute shutdown timeout.
+  provisioner "shell" {
+    execute_command = "{{.Vars}} sudo -n -E bash '{{.Path}}'"
+    environment_vars = [
+      "BUILD_USERNAME=${var.buildUsername}",
+    ]
+    scripts = ["./files/finalize-prepare.sh"]
+  }
+
   # Categories, labels, descriptions and ordering for the deploy form, plus the
   # vaultwarden.* properties themselves, which the cloned VM does not have yet.
   provisioner "shell-local" {
